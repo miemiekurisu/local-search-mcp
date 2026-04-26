@@ -32,11 +32,24 @@ X11VNC_PID=$!
 websockify --web=/usr/share/novnc/ "${NOVNC_PORT}" "localhost:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
 WEBSOCKIFY_PID=$!
 
-CHROMIUM_BIN="$(find /ms-playwright -path '*/chrome-linux/chrome' | sort | tail -n 1)"
+
+CHROMIUM_BIN="${CHROME_BIN:-}"
+
+if [[ -z "${CHROMIUM_BIN}" ]]; then
+  CHROMIUM_BIN="$(find /ms-playwright -type f \( \
+    -path '*/chrome-linux64/chrome' -o \
+    -path '*/chrome-linux/chrome' \
+  \) | sort | tail -n 1)"
+fi
+
 if [[ -z "${CHROMIUM_BIN}" || ! -x "${CHROMIUM_BIN}" ]]; then
   echo "visible chromium binary not found under /ms-playwright" >&2
+  echo "Existing browser files:" >&2
+  find /ms-playwright -maxdepth 6 -type f \( -name chrome -o -name chromium -o -name headless_shell \) -print >&2 || true
   exit 1
 fi
+
+echo "Using visible Chromium: ${CHROMIUM_BIN}"
 
 mkdir -p "${VISIBLE_BROWSER_PROFILE_DIR}"
 rm -f \
