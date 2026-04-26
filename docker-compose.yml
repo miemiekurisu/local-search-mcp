@@ -4,7 +4,7 @@ services:
     image: local-search-mcp:latest
     ports:
       - "${LOCAL_SEARCH_HTTP_HOST_PORT:-8765}:8765"
-      - "127.0.0.1:${LOCAL_SEARCH_NOVNC_HOST_PORT:-6082}:6080"
+      - "0.0.0.0:${LOCAL_SEARCH_NOVNC_HOST_PORT:-6082}:6080"
     environment:
       - PORT=8765
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
