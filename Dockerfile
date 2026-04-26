@@ -27,6 +27,15 @@ RUN mkdir -p /ms-playwright \
     && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx --yes "playwright@${PW_VERSION}" install chromium \
     && chmod -R 755 /ms-playwright
 
+RUN set -eux; \
+    for d in /ms-playwright/chromium-*; do \
+      if [ -d "$d/chrome-linux64" ] && [ ! -e "$d/chrome-linux" ]; then \
+        ln -s chrome-linux64 "$d/chrome-linux"; \
+      fi; \
+    done; \
+    find /ms-playwright -maxdepth 4 -type f -path '*/chrome-linux64/chrome' -print; \
+    find /ms-playwright -maxdepth 4 -type l -path '*/chrome-linux' -print
+
 COPY src ./src
 COPY config ./config
 COPY scripts ./scripts
