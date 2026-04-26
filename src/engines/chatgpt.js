@@ -17,6 +17,16 @@ const SEND_BUTTON_PATTERNS = [
   /uid=([^\s]+)\s+button\s+"Send"/i
 ];
 
+const TURN_COMPLETION_ACTION_PATTERNS = [
+  /\bcopy response\b/i,
+  /\bgood response\b/i,
+  /\bbad response\b/i,
+  /\bread aloud\b/i,
+  /复制(响应|回答)/,
+  /好的(回复|回答)/,
+  /不好的(回复|回答)/
+];
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -92,26 +102,74 @@ function classifyLoginFailure(state) {
 
 async function getChatState(client) {
   return await client.evaluateJson(`() => {
+    const completionPattern = /copy response|good response|bad response|read aloud|复制(响应|回答)|好的(回复|回答)|不好的(回复|回答)/i;
+    const buttonLabel = button =>
+      (button.getAttribute('aria-label') || button.innerText || button.textContent || '').trim();
+    const collectButtonLabels = root =>
+      Array.from(root?.querySelectorAll?.('button') || [])
+        .map(buttonLabel)
+        .filter(Boolean)
+        .slice(0, 40);
+    const assistantNodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+    const latestAssistant = assistantNodes[assistantNodes.length - 1];
+    const candidateSet = new Set();
+    const candidates = [];
+    const pushCandidate = candidate => {
+      if (candidate instanceof HTMLElement && !candidateSet.has(candidate)) {
+        candidateSet.add(candidate);
+        candidates.push(candidate);
+      }
+    };
+    pushCandidate(latestAssistant?.closest?.('[data-testid^="conversation-turn-"]'));
+    pushCandidate(latestAssistant?.closest?.('[data-message-id]'));
+    for (let node = latestAssistant; node instanceof HTMLElement; node = node.parentElement) {
+      pushCandidate(node);
+      if (candidates.length >= 8) break;
+    }
+
+    let latestTurnActionLabels = [];
+    let latestTurnHasCompletionActions = false;
+    for (const candidate of candidates) {
+      const labels = collectButtonLabels(candidate);
+      const hasCompletionActions = labels.some(label => completionPattern.test(label));
+      if (hasCompletionActions) {
+        latestTurnActionLabels = labels;
+        latestTurnHasCompletionActions = true;
+        break;
+      }
+      if (!latestTurnActionLabels.length && labels.length) {
+        latestTurnActionLabels = labels;
+      }
+    }
+
     const composer =
       document.querySelector('div[contenteditable="true"][id*="prompt-textarea"]') ||
       document.querySelector('div[contenteditable="true"][role="textbox"]') ||
       document.querySelector('.ProseMirror[contenteditable="true"]');
-    const sendButton =
-      document.querySelector('button[data-testid="send-button"]') ||
-      document.querySelector('button[aria-label*="Send"]');
-    const assistantMessages = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'))
-      .map(node => (node instanceof HTMLElement ? node.innerText.trim() : ''))
-      .filter(Boolean)
-      .slice(-8);
+    const stopButton =
+      document.querySelector('button[data-testid="stop-button"]') ||
+      Array.from(document.querySelectorAll('button')).find(button => /stop/i.test(buttonLabel(button)));
     return {
       url: location.href,
       title: document.title,
       bodyText: (document.body?.innerText || '').slice(0, 8000),
       composerVisible: Boolean(composer && (composer.getClientRects().length || composer.offsetWidth || composer.offsetHeight)),
-      sendEnabled: Boolean(sendButton && !sendButton.disabled),
-      assistantMessages
+      isGenerating: Boolean(stopButton),
+      assistantCount: assistantNodes.length,
+      latestAssistantText: latestAssistant instanceof HTMLElement ? latestAssistant.innerText.trim() : '',
+      latestTurnActionLabels,
+      latestTurnHasCompletionActions
     };
   }`);
+}
+
+function hasTurnCompletionActions(state) {
+  if (state?.latestTurnHasCompletionActions) {
+    return true;
+  }
+  return (state?.latestTurnActionLabels || []).some(label =>
+    TURN_COMPLETION_ACTION_PATTERNS.some(pattern => pattern.test(label))
+  );
 }
 
 async function ensureSelectedChatPage(client) {
@@ -184,15 +242,28 @@ async function sendPrompt(client, query) {
 async function waitForAssistantReply(client, baselineCount) {
   const deadline = Date.now() + Math.max(CONFIG.browserTimeoutMs * 3, 90000);
   let lastSeen = '';
+  let stablePolls = 0;
+  let completionActionPolls = 0;
+  let settledPolls = 0;
 
   while (Date.now() < deadline) {
     const state = await getChatState(client);
-    if (state.composerVisible && Array.isArray(state.assistantMessages)) {
-      const latest = state.assistantMessages[state.assistantMessages.length - 1] || '';
-      if (state.assistantMessages.length > baselineCount && latest.trim()) {
-        if (latest === lastSeen) {
+    if (state.composerVisible) {
+      const latest = String(state.latestAssistantText || '').trim();
+      if (state.assistantCount > baselineCount && latest) {
+        const textUnchanged = latest === lastSeen;
+        stablePolls = textUnchanged ? stablePolls + 1 : 0;
+        completionActionPolls = hasTurnCompletionActions(state) ? completionActionPolls + 1 : 0;
+        settledPolls = state.isGenerating ? 0 : settledPolls + 1;
+
+        if (completionActionPolls >= 2 && stablePolls >= 1) {
           return latest;
         }
+
+        if (settledPolls >= 2 && stablePolls >= 2) {
+          return latest;
+        }
+
         lastSeen = latest;
       }
     } else if (!state.composerVisible && (state.url.includes('/auth/') || isChallengeState(state))) {
@@ -210,7 +281,7 @@ export async function searchChatGPT(query) {
 
   await ensureSelectedChatPage(client);
   const readyState = await waitForComposer(client, 30000);
-  const baselineCount = Array.isArray(readyState.assistantMessages) ? readyState.assistantMessages.length : 0;
+  const baselineCount = Number(readyState.assistantCount || 0);
 
   await sendPrompt(client, query);
   const response = await waitForAssistantReply(client, baselineCount);
