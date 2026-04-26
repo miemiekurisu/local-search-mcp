@@ -20,6 +20,10 @@ RUN apt-get update \
 
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright \
+    && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx playwright install chromium \
+    && chmod -R 755 /ms-playwright
 
 COPY src ./src
 COPY config ./config

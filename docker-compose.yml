@@ -7,6 +7,7 @@ services:
       - "127.0.0.1:${LOCAL_SEARCH_NOVNC_HOST_PORT:-6082}:6080"
     environment:
       - PORT=8765
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - DEFAULT_SEARCH_LIMIT=10
       - MAX_FETCH_CONCURRENCY=3
       - SEARCH_HEADLESS=false
