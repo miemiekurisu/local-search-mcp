@@ -1,0 +1,24 @@
+{
+  "name": "local-search-mcp",
+  "version": "0.1.0",
+  "description": "Local Search & Web Evidence MCP/HTTP service for local coding agents. No paid search API required.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/http_server.js",
+    "mcp": "node src/mcp_server.js",
+    "check": "node src/self_check.js",
+    "browser:sessions": "node scripts/browser_sessions.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "@mozilla/readability": "^0.5.0",
+    "cheerio": "^1.0.0",
+    "chrome-devtools-mcp": "0.2.7",
+    "express": "^4.19.2",
+    "html-to-text": "^9.0.5",
+    "jsdom": "^25.0.1",
+    "playwright": "^1.49.1",
+    "undici": "^6.21.1",
+    "zod": "^3.24.1"
+  }
+}

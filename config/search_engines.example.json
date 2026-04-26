@@ -1,0 +1,17 @@
+[
+  {
+    "id": "example_engine",
+    "type": "html",
+    "url_template": "https://example.com/search?q={{query}}",
+    "method": "GET",
+    "selectors": {
+      "result": ".result-item",
+      "title": "a.title",
+      "url": "a.title",
+      "snippet": ".snippet"
+    },
+    "headers": {
+      "accept-language": "en-US,en;q=0.9"
+    }
+  }
+]

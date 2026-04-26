@@ -1,0 +1,39 @@
+services:
+  local-search-mcp:
+    build: .
+    image: local-search-mcp:latest
+    ports:
+      - "${LOCAL_SEARCH_HTTP_HOST_PORT:-8765}:8765"
+      - "127.0.0.1:${LOCAL_SEARCH_NOVNC_HOST_PORT:-6082}:6080"
+    environment:
+      - PORT=8765
+      - DEFAULT_SEARCH_LIMIT=10
+      - MAX_FETCH_CONCURRENCY=3
+      - SEARCH_HEADLESS=false
+      - BROWSER_STATE_DIR=/data/browser-state
+      - USE_EXISTING_CHROME=true
+      - CDP_URL=http://127.0.0.1:9224
+      - CHROME_DEVTOOLS_MCP_BROWSER_URL=http://127.0.0.1:9224
+      - VISIBLE_BROWSER_CDP_PORT=9224
+      - VISIBLE_BROWSER_PROFILE_DIR=/data/browser-profile
+      - VISIBLE_BROWSER_START_URL=about:blank
+      - VISIBLE_BROWSER_PROXY_SERVER=${BROWSER_PROXY_SERVER:-}
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - http_proxy=
+      - https_proxy=
+      - NO_PROXY=
+      - no_proxy=
+      - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
+      - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: "1gb"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
