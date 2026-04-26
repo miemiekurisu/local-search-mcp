@@ -22,9 +22,9 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN mkdir -p /ms-playwright \
-    && PW_VERSION="$(node -p \"try { require('playwright/package.json').version } catch(e) { require('playwright-core/package.json').version }\")" \
+    && PW_VERSION=$(node -e "try { console.log(require('playwright/package.json').version) } catch (e) { console.log(require('playwright-core/package.json').version) }") \
     && echo "Installing Playwright Chromium for version ${PW_VERSION}" \
-    && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx --yes playwright@${PW_VERSION} install chromium \
+    && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx --yes "playwright@${PW_VERSION}" install chromium \
     && chmod -R 755 /ms-playwright
 
 COPY src ./src
