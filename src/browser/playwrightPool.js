@@ -4,6 +4,9 @@ import { CONFIG, safeJoin } from '../config/index.js';
 
 const CDP_URL = process.env.CDP_URL || 'http://localhost:9222';
 const USE_EXISTING_CHROME = process.env.USE_EXISTING_CHROME === 'true';
+const EXISTING_CHROME_CONNECT_TIMEOUT_MS = envInt('EXISTING_CHROME_CONNECT_TIMEOUT_MS', 15000, 1000);
+const EXISTING_CHROME_CONNECT_RETRY_MS = envInt('EXISTING_CHROME_CONNECT_RETRY_MS', 500, 100);
+const VISIBLE_BROWSER_PROFILE_DIR = process.env.VISIBLE_BROWSER_PROFILE_DIR || null;
 
 const BROWSER_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -46,6 +49,20 @@ function randomLocale() {
 function randomViewport() {
   const idx = Math.floor(Math.random() * VIEWPORTS.length);
   return VIEWPORTS[idx];
+}
+
+function envInt(name, fallback, min) {
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.floor(n));
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function browserIsConnected(browser) {
+  return Boolean(browser && (typeof browser.isConnected !== 'function' || browser.isConnected()));
 }
 
 async function stealthPlugin(page) {
@@ -121,29 +138,89 @@ export class PlaywrightPool {
 
   async getBrowser() {
     if (USE_EXISTING_CHROME) {
-      if (!this.connectedBrowser) {
-        try {
-          console.log('[browser] connecting to existing Chrome via CDP...');
-          let cdpEndpoint = CDP_URL;
-          if (!CDP_URL.includes('/json') && !CDP_URL.includes('/devtools/')) {
-            const resp = await fetch(`${CDP_URL}/json/version`).catch(() => null);
-            if (resp?.ok) {
-              const data = await resp.json();
-              cdpEndpoint = data.webSocketDebuggerUrl;
-            }
-          }
-          this.connectedBrowser = await chromium.connectOverCDP(cdpEndpoint);
-          console.log('[browser] connected to existing Chrome');
-        } catch (err) {
-          console.log('[browser] could not connect to existing Chrome:', err.message);
-          console.log('[browser] falling back to launch new browser');
-          this.browser = await chromium.launch(this.launchOptions());
-        }
+      if (this.connectedBrowser && !browserIsConnected(this.connectedBrowser)) {
+        this.resetConnectedBrowser('CDP connection is no longer active');
       }
-    } else if (!this.browser) {
-      this.browser = await chromium.launch(this.launchOptions());
+      if (!this.connectedBrowser) {
+        await this.connectToExistingChrome();
+      }
+      return this.connectedBrowser;
     }
-    return this.connectedBrowser || this.browser;
+
+    if (this.browser && !browserIsConnected(this.browser)) {
+      this.browser = null;
+    }
+    if (!this.browser) {
+      const browser = await chromium.launch(this.launchOptions());
+      browser.on('disconnected', () => {
+        if (this.browser === browser) {
+          this.browser = null;
+        }
+      });
+      this.browser = browser;
+    }
+    return this.browser;
+  }
+
+  resetConnectedBrowser(reason) {
+    if (reason) {
+      console.log(`[browser] existing Chrome disconnected: ${reason}`);
+    }
+    this.connectedBrowser = null;
+    this.sharedContext = null;
+    this.sessionPages.clear();
+    this.hydratedSharedSessions.clear();
+  }
+
+  async resolveCdpEndpoint() {
+    if (!CDP_URL.startsWith('http') || CDP_URL.includes('/json') || CDP_URL.includes('/devtools/')) {
+      return CDP_URL;
+    }
+    const resp = await fetch(`${CDP_URL}/json/version`);
+    if (!resp.ok) {
+      throw new Error(`CDP version endpoint returned HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    return data.webSocketDebuggerUrl || CDP_URL;
+  }
+
+  async connectToExistingChrome() {
+    const deadline = Date.now() + EXISTING_CHROME_CONNECT_TIMEOUT_MS;
+    let lastError = null;
+    console.log(`[browser] connecting to existing Chrome via CDP at ${CDP_URL}...`);
+
+    while (Date.now() <= deadline) {
+      try {
+        const cdpEndpoint = await this.resolveCdpEndpoint();
+        const browser = await chromium.connectOverCDP(cdpEndpoint);
+        this.connectedBrowser = browser;
+        browser.on('disconnected', () => {
+          if (this.connectedBrowser === browser) {
+            this.resetConnectedBrowser('CDP connection closed');
+          }
+        });
+        if (!browserIsConnected(browser)) {
+          this.resetConnectedBrowser('CDP connection closed immediately after connect');
+          throw new Error('CDP connection closed immediately after connect');
+        }
+        console.log('[browser] connected to existing Chrome');
+        return browser;
+      } catch (err) {
+        lastError = err;
+        await sleep(EXISTING_CHROME_CONNECT_RETRY_MS);
+      }
+    }
+
+    const err = new Error(`existing Chrome CDP is unavailable at ${CDP_URL} after ${EXISTING_CHROME_CONNECT_TIMEOUT_MS}ms: ${lastError?.message || 'unknown error'}`);
+    err.code = 'BROWSER_UNAVAILABLE';
+    err.details = {
+      browser_mode: 'existing-cdp',
+      cdp_url: CDP_URL,
+      connect_timeout_ms: EXISTING_CHROME_CONNECT_TIMEOUT_MS,
+      last_error: lastError?.message || null,
+      visible_browser_profile_dir: VISIBLE_BROWSER_PROFILE_DIR
+    };
+    throw err;
   }
 
   launchOptions() {
@@ -177,6 +254,7 @@ export class PlaywrightPool {
   }
 
   async getSharedContext() {
+    const browser = await this.getBrowser();
     if (this.sharedContext) {
       try {
         this.sharedContext.pages();
@@ -185,7 +263,6 @@ export class PlaywrightPool {
         this.sharedContext = null;
       }
     }
-    const browser = await this.getBrowser();
     const contexts = browser.contexts();
     if (contexts.length > 0) {
       this.sharedContext = contexts[0];
@@ -312,6 +389,7 @@ export class PlaywrightPool {
 
     let context;
     let mode = 'persistent-context';
+    await this.getBrowser();
     if (this.connectedBrowser) {
       context = await this.getSharedContext();
       await this.hydrateSharedContext(context, sessionKey);
@@ -343,6 +421,7 @@ export class PlaywrightPool {
       throw new Error('sessionKey is required');
     }
     let context;
+    await this.getBrowser();
     if (this.connectedBrowser) {
       context = await this.getSharedContext();
     } else {
@@ -364,7 +443,12 @@ export class PlaywrightPool {
       saved_state_exists: Boolean(statePath && fs.existsSync(statePath)),
       state_path: statePath,
       interactive_page_url: pinnedPage && !pinnedPage.isClosed() ? pinnedPage.url() : null,
-      attached_to_existing_browser: Boolean(this.connectedBrowser)
+      browser_mode: USE_EXISTING_CHROME ? 'existing-cdp' : 'playwright-launch',
+      attached_to_existing_browser: browserIsConnected(this.connectedBrowser),
+      launched_browser_connected: browserIsConnected(this.browser),
+      cdp_url: USE_EXISTING_CHROME ? CDP_URL : null,
+      visible_browser_profile_dir: VISIBLE_BROWSER_PROFILE_DIR,
+      search_headless: CONFIG.headless
     };
   }
 

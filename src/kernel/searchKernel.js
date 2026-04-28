@@ -19,14 +19,25 @@ export class SearchKernel {
     const query = requiredString(args.query, 'query');
     const limit = limit20(args.limit);
     const engines = normalizeEnginesForSearch(args.engines, this.engines);
-    const { results, failures, engines_tried } = await this.engines.searchMany(query, {
+    const search = await this.engines.searchMany(query, {
       limit,
       engines,
       proxyProfile: args.proxy_profile || args.proxyProfile || 'auto',
       timeoutMs: args.timeout_ms || args.timeoutMs
     });
     const query_id = 'q_' + crypto.createHash('sha1').update(query + Date.now()).digest('hex').slice(0, 12);
-    const payload = { query_id, query, limit, results, failures, engines_tried, created_at: new Date().toISOString() };
+    const payload = {
+      query_id,
+      query,
+      limit,
+      results: search.results,
+      failures: search.failures,
+      engines_tried: search.engines_tried,
+      fallback: search.fallback || null,
+      fallback_attempted_for: search.fallback_attempted_for || [],
+      fallback_skipped: search.fallback_skipped || [],
+      created_at: new Date().toISOString()
+    };
     const artifact_ref = this.artifactStore.writeText('search', JSON.stringify(payload, null, 2), { query, kind: 'search_results' });
     return { ...payload, artifact_ref };
   }
@@ -88,6 +99,9 @@ export class SearchKernel {
       items,
       failures,
       search_artifact_ref: search.artifact_ref,
+      search_fallback: search.fallback || null,
+      search_fallback_attempted_for: search.fallback_attempted_for || [],
+      search_fallback_skipped: search.fallback_skipped || [],
       created_at: new Date().toISOString()
     };
     const artifact_ref = this.artifactStore.writeText('bundles', JSON.stringify(bundle, null, 2), { query, kind: 'evidence_bundle' });
@@ -129,7 +143,16 @@ export class SearchKernel {
   }
 
   engineStatus() {
-    return { status: 'ok', engines: this.engines.list(), proxy_profiles: this.proxyRouter.status(), limits: { max_search_limit: CONFIG.maxSearchLimit, max_fetch_concurrency: CONFIG.maxFetchConcurrency } };
+    return {
+      status: 'ok',
+      engines: this.engines.list(),
+      browser_sessions: listBrowserSessions().map(session => ({
+        ...session,
+        ...this.browserPool.sessionStatus(session.id)
+      })),
+      proxy_profiles: this.proxyRouter.status(),
+      limits: { max_search_limit: CONFIG.maxSearchLimit, max_fetch_concurrency: CONFIG.maxFetchConcurrency }
+    };
   }
 
   browserSessions() {
@@ -147,11 +170,24 @@ export class SearchKernel {
     if (!session) throw new Error(`unknown session: ${sessionId}`);
     const targetUrl = String(args.url || args.target_url || session.loginUrl || session.homeUrl);
     const proxyProfile = args.proxy_profile || args.proxyProfile || this.proxyRouter.resolveForEngine(session.engine, targetUrl).profile;
-    const info = await this.browserPool.openSessionPage({
-      sessionKey: session.id,
-      url: targetUrl,
-      proxyProfile
-    });
+    let info;
+    try {
+      info = await this.browserPool.openSessionPage({
+        sessionKey: session.id,
+        url: targetUrl,
+        proxyProfile
+      });
+    } catch (err) {
+      err.details = {
+        ...(err.details || {}),
+        session: session.id,
+        engine: session.engine,
+        target_url: targetUrl,
+        proxy_profile: proxyProfile,
+        browser_session: this.browserPool.sessionStatus(session.id)
+      };
+      throw err;
+    }
     return {
       ...session,
       ...info,
@@ -163,10 +199,20 @@ export class SearchKernel {
     const sessionId = requiredString(args.session || args.session_id || args.id, 'session');
     const session = getBrowserSession(sessionId);
     if (!session) throw new Error(`unknown session: ${sessionId}`);
-    return {
-      ...session,
-      ...(await this.browserPool.saveSessionState(session.id))
-    };
+    try {
+      return {
+        ...session,
+        ...(await this.browserPool.saveSessionState(session.id))
+      };
+    } catch (err) {
+      err.details = {
+        ...(err.details || {}),
+        session: session.id,
+        engine: session.engine,
+        browser_session: this.browserPool.sessionStatus(session.id)
+      };
+      throw err;
+    }
   }
 
   getArtifact(args = {}) {

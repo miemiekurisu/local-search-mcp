@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/playwright:v1.59.1-noble
 
 WORKDIR /app
+ARG PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV NODE_ENV=production \
     PORT=8765 \
     ARTIFACT_DIR=/data/artifacts \
@@ -11,6 +12,7 @@ ENV NODE_ENV=production \
     SEARCH_HEADLESS=true \
     USE_EXISTING_CHROME=false \
     CDP_URL=http://localhost:9222 \
+    PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH} \
     BRAVE_API_KEY= \
     TAVILY_API_KEY=
 
@@ -20,21 +22,21 @@ RUN apt-get update \
 
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN mkdir -p /ms-playwright \
+RUN mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}" \
     && PW_VERSION=$(node -e "try { console.log(require('playwright/package.json').version) } catch (e) { console.log(require('playwright-core/package.json').version) }") \
     && echo "Installing Playwright Chromium for version ${PW_VERSION}" \
-    && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright npx --yes "playwright@${PW_VERSION}" install chromium \
-    && chmod -R 755 /ms-playwright
+    && PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH}" npx --yes "playwright@${PW_VERSION}" install chromium \
+    && chmod -R 755 "${PLAYWRIGHT_BROWSERS_PATH}"
 
 RUN set -eux; \
-    for d in /ms-playwright/chromium-*; do \
+    for d in "${PLAYWRIGHT_BROWSERS_PATH}"/chromium-*; do \
+      [ -d "$d" ] || continue; \
       if [ -d "$d/chrome-linux64" ] && [ ! -e "$d/chrome-linux" ]; then \
         ln -s chrome-linux64 "$d/chrome-linux"; \
       fi; \
     done; \
-    find /ms-playwright -maxdepth 4 -type f -path '*/chrome-linux64/chrome' -print; \
-    find /ms-playwright -maxdepth 4 -type l -path '*/chrome-linux' -print
+    find "${PLAYWRIGHT_BROWSERS_PATH}" -maxdepth 4 -type f -path '*/chrome-linux64/chrome' -print; \
+    find "${PLAYWRIGHT_BROWSERS_PATH}" -maxdepth 4 -type l -path '*/chrome-linux' -print
 
 COPY src ./src
 COPY config ./config

@@ -26,6 +26,10 @@ export function getBrowserSession(sessionId) {
   return BROWSER_SESSION_CATALOG[sessionId] || null;
 }
 
+export function getBrowserSessionByEngine(engine) {
+  return Object.values(BROWSER_SESSION_CATALOG).find(session => session.engine === engine) || null;
+}
+
 export function listBrowserSessions() {
   return Object.values(BROWSER_SESSION_CATALOG);
 }

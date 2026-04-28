@@ -7,8 +7,9 @@ const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 const EXA_API_KEY = process.env.EXA_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_SEARCH_ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
+const ENABLE_GOOGLE_API_FALLBACK = process.env.ENABLE_GOOGLE_API_FALLBACK === 'true';
 
-const FALLBACK_APIS = ['brave', 'tavily', 'exa', 'google'];
+const FALLBACK_APIS = ['brave', 'tavily', 'exa', ...(ENABLE_GOOGLE_API_FALLBACK ? ['google'] : [])];
 
 export async function searchViaApi(apiName, query, limit = 10) {
   switch (apiName) {
@@ -117,7 +118,7 @@ async function searchGoogleApi(query, limit) {
 }
 
 export async function searchWithFallbacks(query, limit, failedEngines = []) {
-  const apiKeyExists = BRAVE_API_KEY || TAVILY_API_KEY || EXA_API_KEY || GOOGLE_API_KEY;
+  const apiKeyExists = BRAVE_API_KEY || TAVILY_API_KEY || EXA_API_KEY || (ENABLE_GOOGLE_API_FALLBACK && GOOGLE_API_KEY);
   if (!apiKeyExists) return null;
   
   const available = FALLBACK_APIS.filter(api => !failedEngines.includes(api));

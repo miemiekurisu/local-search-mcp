@@ -89,15 +89,46 @@ function classifyLoginFailure(state) {
     return new SearchEngineError(
       'INTERACTIVE_LOGIN_REQUIRED',
       'ChatGPT requires interactive verification in the shared browser session. Complete the check manually in noVNC, then retry.',
-      { session: 'chatgpt', login_url: CHATGPT_SESSION.loginUrl, current_url: url }
+      {
+        session: 'chatgpt',
+        login_url: CHATGPT_SESSION.loginUrl,
+        current_url: url,
+        cdp_url: CONFIG.chromeDevtoolsMcpBrowserUrl,
+        retry_hint: 'Open the chatgpt session in noVNC, finish the human/2FA/security check in the visible Chromium, then retry.'
+      }
     );
   }
 
   return new SearchEngineError(
     'LOGIN_REQUIRED',
     'ChatGPT needs an existing logged-in browser session. Open the shared browser session and sign in manually, then save the session state.',
-    { session: 'chatgpt', login_url: CHATGPT_SESSION.loginUrl, current_url: url }
+    {
+      session: 'chatgpt',
+      login_url: CHATGPT_SESSION.loginUrl,
+      current_url: url,
+      cdp_url: CONFIG.chromeDevtoolsMcpBrowserUrl,
+      retry_hint: 'Open the chatgpt session in noVNC, sign in to ChatGPT in the visible Chromium, save the session, then retry.'
+    }
   );
+}
+
+function chatGptErrorDetails(extra = {}) {
+  return {
+    session: 'chatgpt',
+    login_url: CHATGPT_SESSION.loginUrl,
+    home_url: CHATGPT_SESSION.homeUrl,
+    cdp_url: CONFIG.chromeDevtoolsMcpBrowserUrl,
+    retry_hint: 'Open the chatgpt session in noVNC and make sure the visible Chromium is logged in and past any human verification.',
+    ...extra
+  };
+}
+
+function classifyMcpFailure(err) {
+  const message = String(err?.message || err || '');
+  if (/ECONNREFUSED|fetch failed|browser.*closed|Target page, context or browser has been closed|connect/i.test(message)) {
+    return 'BROWSER_UNAVAILABLE';
+  }
+  return 'CHROME_DEVTOOLS_MCP_ERROR';
 }
 
 async function getChatState(client) {
@@ -277,21 +308,33 @@ async function waitForAssistantReply(client, baselineCount) {
 }
 
 export async function searchChatGPT(query) {
-  const client = getChromeDevtoolsMcpClient();
+  try {
+    const client = getChromeDevtoolsMcpClient();
 
-  await ensureSelectedChatPage(client);
-  const readyState = await waitForComposer(client, 30000);
-  const baselineCount = Number(readyState.assistantCount || 0);
+    await ensureSelectedChatPage(client);
+    const readyState = await waitForComposer(client, 30000);
+    const baselineCount = Number(readyState.assistantCount || 0);
 
-  await sendPrompt(client, query);
-  const response = await waitForAssistantReply(client, baselineCount);
-  const snippet = response.slice(0, 1800);
+    await sendPrompt(client, query);
+    const response = await waitForAssistantReply(client, baselineCount);
+    const snippet = response.slice(0, 1800);
 
-  return [makeResult({
-    title: response.slice(0, 100),
-    url: CHATGPT_SESSION.homeUrl,
-    snippet,
-    engine: 'chatgpt',
-    rank: 1
-  })];
+    return [makeResult({
+      title: response.slice(0, 100),
+      url: CHATGPT_SESSION.homeUrl,
+      snippet,
+      engine: 'chatgpt',
+      rank: 1
+    })];
+  } catch (err) {
+    if (err instanceof SearchEngineError) {
+      err.details = chatGptErrorDetails(err.details);
+      throw err;
+    }
+    throw new SearchEngineError(
+      classifyMcpFailure(err),
+      `ChatGPT Chromium session failed: ${err?.message || err}`,
+      chatGptErrorDetails()
+    );
+  }
 }

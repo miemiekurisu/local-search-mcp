@@ -6,6 +6,7 @@ import { makeResult, SearchEngineError } from './base.js';
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_SEARCH_ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
+const ENABLE_GOOGLE_API_FALLBACK = process.env.ENABLE_GOOGLE_API_FALLBACK === 'true';
 
 let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 3000;
@@ -104,11 +105,13 @@ export async function searchGoogle(query, opts = {}) {
   
   const results = await searchGoogleBrowser(query, { ...opts, limit });
   if (results.length > 0) return results;
+
+  if (ENABLE_GOOGLE_API_FALLBACK) {
+    const apiResults = await searchGoogleApi(query, limit);
+    if (apiResults.length > 0) return apiResults;
+  }
   
-  const apiResults = await searchGoogleApi(query, limit);
-  if (apiResults.length > 0) return apiResults;
-  
-  throw new SearchEngineError('ENGINE_BLOCKED', 'Google search failed (browser + API fallback exhausted)');
+  throw new SearchEngineError('ENGINE_BLOCKED', 'Google search failed in the Chromium browser session');
 }
 
 export async function searchGoogleBrowser(query, opts = {}) {
@@ -136,15 +139,26 @@ export async function searchGoogleBrowser(query, opts = {}) {
         await page.waitForTimeout(randomDelay(2000, 4000));
         
         const html = await page.content();
-        if (isLikelyBlockedText(html)) throw new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha');
+        if (isLikelyBlockedText(html)) {
+          throw new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha in the Chromium browser session', {
+            session: 'google',
+            current_url: page.url(),
+            retry_hint: 'Open the google session in noVNC, complete the human verification in the visible Chromium, then retry.'
+          });
+        }
         
         const parsed = parseGoogleHtml(html, limit);
-        if (parsed.length === 0) throw new SearchEngineError('SERP_PARSE_FAILED', 'Google returned no results');
+        if (parsed.length === 0) {
+          throw new SearchEngineError('SERP_PARSE_FAILED', 'Google returned no results from the Chromium browser session', {
+            session: 'google',
+            current_url: page.url()
+          });
+        }
         return parsed;
       });
     } catch (err) {
       lastError = err;
-      if (err.code === 'ENGINE_BLOCKED') break;
+      if (err.code === 'ENGINE_BLOCKED' || err.code === 'BROWSER_UNAVAILABLE') break;
     }
   }
   

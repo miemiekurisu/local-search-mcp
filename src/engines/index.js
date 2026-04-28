@@ -1,4 +1,5 @@
 import { CONFIG, readJsonIfExists } from '../config/index.js';
+import { getBrowserSessionByEngine } from '../browser/sessionCatalog.js';
 import { uniqueByUrl } from '../utils/normalize.js';
 import { searchDuckDuckGoHttp } from './duckduckgo_http.js';
 import { searchBing } from './bing.js';
@@ -7,6 +8,8 @@ import { searchWikipedia } from './wikipedia.js';
 import { searchChatGPT } from './chatgpt.js';
 import { searchCustomHtml } from './custom_html.js';
 import { searchWithFallbacks } from './api_fallback.js';
+
+const CHROMIUM_ONLY_ENGINES = new Set(['google', 'chatgpt']);
 
 export class EngineRegistry {
   constructor({ proxyRouter, browserPool }) {
@@ -18,10 +21,10 @@ export class EngineRegistry {
   list() {
     return [
       { id: 'duckduckgo', builtin: true, primary: true },
-      { id: 'bing', builtin: true },
+      { id: 'bing', builtin: true, session: 'bing' },
       { id: 'wikipedia', builtin: true },
-      { id: 'google', builtin: true, note: 'via visible Chromium + reusable browser session' },
-      { id: 'chatgpt', builtin: true, note: 'via Chrome DevTools MCP + reusable browser session' },
+      { id: 'google', builtin: true, chromium_only: true, session: 'google', note: 'via visible Chromium + reusable browser session' },
+      { id: 'chatgpt', builtin: true, chromium_only: true, session: 'chatgpt', note: 'via Chrome DevTools MCP + reusable browser session' },
       ...this.customEngines.map(e => ({ id: e.id, builtin: false, type: e.type || 'html' }))
     ];
   }
@@ -60,21 +63,67 @@ export class EngineRegistry {
         const results = await this.searchOne(engine, query, { ...opts, limit });
         all.push(...results);
       } catch (err) {
-        failures.push({ engine, code: err.code || 'ENGINE_ERROR', message: err.message, details: err.details || {} });
+        failures.push(this.buildFailure(engine, err));
         failedEngines.push(engine);
       }
     }
     
     let fallbackWarning = null;
-    if (failedEngines.length > 0) {
-      const fallbackData = await searchWithFallbacks(query, limit, failedEngines);
+    const fallbackSkipped = failures
+      .filter(failure => CHROMIUM_ONLY_ENGINES.has(failure.engine))
+      .map(failure => ({
+        engine: failure.engine,
+        reason: 'chromium_session_required',
+        session: failure.session || null
+      }));
+    const fallbackEligibleEngines = failedEngines.filter(engine => !CHROMIUM_ONLY_ENGINES.has(engine));
+    if (fallbackEligibleEngines.length > 0) {
+      const fallbackData = await searchWithFallbacks(query, limit, fallbackEligibleEngines);
       if (fallbackData) {
         all.push(...fallbackData.results);
         fallbackWarning = `页面搜索不可用，已通过 ${fallbackData.via} API 获取结果。注意：${fallbackData.via} 有免费额度限制，超出后可能产生费用。建议配置自己的API Key。`;
       }
     }
     
-    return { results: uniqueByUrl(all, limit).slice(0, limit), failures, engines_tried: engines, fallback: fallbackWarning };
+    return {
+      results: uniqueByUrl(all, limit).slice(0, limit),
+      failures,
+      engines_tried: engines,
+      fallback: fallbackWarning,
+      fallback_attempted_for: fallbackEligibleEngines,
+      fallback_skipped: fallbackSkipped
+    };
+  }
+
+  buildFailure(engine, err) {
+    const session = getBrowserSessionByEngine(engine);
+    const errorObject = err && typeof err === 'object' ? err : {};
+    const details = { ...(errorObject.details || {}) };
+    let retryHint = details.retry_hint;
+
+    if (session) {
+      details.browser_session = {
+        id: session.id,
+        label: session.label,
+        login_url: session.loginUrl,
+        home_url: session.homeUrl,
+        ...(this.browserPool?.sessionStatus(session.id) || {})
+      };
+    }
+
+    if (!retryHint && CHROMIUM_ONLY_ENGINES.has(engine)) {
+      retryHint = `Open the ${session?.id || engine} session in noVNC, complete login/verification in the visible Chromium, then retry.`;
+    }
+
+    return {
+      engine,
+      code: errorObject.code || 'ENGINE_ERROR',
+      message: errorObject.message || String(err),
+      chromium_only: CHROMIUM_ONLY_ENGINES.has(engine),
+      session: session?.id || null,
+      retry_hint: retryHint || null,
+      details
+    };
   }
 }
 

@@ -13,7 +13,17 @@ function asyncRoute(fn) {
       const result = await fn(req.body || req.query || {});
       res.json({ ok: true, result });
     } catch (err) {
-      res.status(500).json({ ok: false, error: { code: err.code || 'ERROR', message: err.message, stack: process.env.NODE_ENV === 'production' ? undefined : err.stack } });
+      const errorObject = err && typeof err === 'object' ? err : {};
+      res.status(500).json({
+        ok: false,
+        error: {
+          code: errorObject.code || 'ERROR',
+          message: errorObject.message || String(err),
+          engine: errorObject.engine,
+          details: errorObject.details,
+          stack: process.env.NODE_ENV === 'production' ? undefined : errorObject.stack
+        }
+      });
     }
   };
 }

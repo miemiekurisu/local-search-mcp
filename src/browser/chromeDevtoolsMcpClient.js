@@ -84,13 +84,24 @@ export class ChromeDevtoolsMcpClient {
   }
 
   async callTool(name, args = {}) {
-    const client = await this.connect();
-    const result = await client.callTool({ name, arguments: args });
-    if (result?.isError) {
-      const message = joinTextContent(result) || `chrome-devtools-mcp tool failed: ${name}`;
-      throw new Error(message);
+    try {
+      const client = await this.connect();
+      const result = await client.callTool({ name, arguments: args });
+      if (result?.isError) {
+        const message = joinTextContent(result) || `chrome-devtools-mcp tool failed: ${name}`;
+        throw Object.assign(new Error(message), {
+          code: 'CHROME_DEVTOOLS_MCP_TOOL_ERROR',
+          details: { tool: name }
+        });
+      }
+      return result;
+    } catch (err) {
+      await this.close().catch(() => {});
+      if (err && typeof err === 'object' && !err.details) {
+        err.details = { tool: name };
+      }
+      throw err;
     }
-    return result;
   }
 
   async callToolText(name, args = {}) {
