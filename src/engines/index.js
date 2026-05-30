@@ -30,7 +30,7 @@ export class EngineRegistry {
   }
 
   defaultSearchEngines() {
-    return ['duckduckgo', 'bing', 'wikipedia', 'google', ...this.customEngines.map(e => e.id)];
+    return ['duckduckgo', 'wikipedia', ...this.customEngines.map(e => e.id)];
   }
 
   engineStatus() {
@@ -60,7 +60,8 @@ export class EngineRegistry {
     
     for (const engine of engines) {
       try {
-        const results = await this.searchOne(engine, query, { ...opts, limit });
+        const timeout = engine === 'google' || engine === 'bing' || engine === 'chatgpt' ? 30000 : 20000;
+        const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit }), timeout);
         all.push(...results);
       } catch (err) {
         failures.push(this.buildFailure(engine, err));
@@ -127,9 +128,20 @@ export class EngineRegistry {
   }
 }
 
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => {
+      const err = new Error(`Engine timed out after ${ms}ms`);
+      err.code = 'ENGINE_TIMEOUT';
+      reject(err);
+    }, ms))
+  ]);
+}
+
 function normalizeEngines(engines, customEngines) {
   if (!engines || engines.length === 0 || engines.includes('auto')) {
-    return ['duckduckgo', 'bing', 'wikipedia', 'google', ...customEngines.map(e => e.id)];
+    return ['duckduckgo', 'wikipedia', ...customEngines.map(e => e.id)];
   }
   return engines;
 }

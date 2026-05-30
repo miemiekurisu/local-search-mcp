@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "local-search-mcp": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "local-search-mcp-local-search-mcp-1",
+        "node",
+        "src/mcp_server.js"
+      ]
+    }
+  }
+}

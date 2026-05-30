@@ -6,11 +6,16 @@
     "server": "${BROWSER_PROXY_SERVER}",
     "no_proxy": ["localhost", "127.0.0.1", "host.docker.internal", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
   },
+  "lan": {
+    "type": "http",
+    "server": "http://192.168.2.100:8117",
+    "no_proxy": ["localhost", "127.0.0.1", "host.docker.internal", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+  },
   "engine_proxies": {
-    "google": "auto",
-    "bing": "auto",
-    "wikipedia": "auto",
-    "duckduckgo": "auto",
-    "chatgpt": "auto"
+    "google": "lan",
+    "bing": "lan",
+    "wikipedia": "lan",
+    "duckduckgo": "lan",
+    "chatgpt": "lan"
   }
 }
