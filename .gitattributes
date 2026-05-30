@@ -1,0 +1,23 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Shell scripts must always be LF
+*.sh text eol=lf
+
+# Batch scripts should remain CRLF
+*.bat text eol=crlf
+
+# JavaScript source
+*.js text eol=lf
+
+# JSON config
+*.json text eol=lf
+
+# Markdown
+*.md text eol=lf
+
+# YAML
+*.yml text eol=lf
+
+# Dockerfile
+Dockerfile text eol=lf
