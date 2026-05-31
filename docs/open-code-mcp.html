@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>local-search-mcp OpenCode 集成指南</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
+h1 { border-bottom: 2px solid #eee; padding-bottom: 8px; }
+h2 { margin-top: 32px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+h3 { margin-top: 24px; }
+pre { background: #f6f8fa; border-radius: 6px; padding: 16px; overflow-x: auto; font-size: 14px; }
+code { background: #f0f2f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+th { background: #f6f8fa; }
+.note { background: #fffbea; border-left: 4px solid #f0c040; padding: 12px 16px; margin: 16px 0; border-radius: 4px; }
+.warn { background: #fff0f0; border-left: 4px solid #d32f2f; padding: 12px 16px; margin: 16px 0; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<h1>local-search-mcp — OpenCode MCP 集成指南</h1>
+
+<p>本文档说明如何将 <strong>local-search-mcp</strong>（学术论文搜索 + 深度研究引擎）配置为 OpenCode 的 MCP 服务器。</p>
+
+<h2>前提</h2>
+<ul>
+  <li>Docker 部署运行中：<code>docker compose up -d --build</code></li>
+  <li>服务监听 <code>http://localhost:${PORT:-8765}</code></li>
+  <li>OpenCode 已安装（建议 v0.14+）</li>
+</ul>
+
+<h2>配置方式（二选一）</h2>
+
+<h3>方式 A：远程连接（推荐 — 适用于 Docker 部署）</h3>
+<p>OpenCode 通过 HTTP 连接到你运行中的 Docker 容器。需要将配置写入 <strong>OpenCode 的全局配置</strong>或<strong>项目根目录的 <code>opencode.json</code></strong>。</p>
+
+<p><strong>方案 A1：MCP Streamable HTTP 端点（完整 MCP 协议支持）</strong></p>
+<pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "local-search": {
+      "type": "remote",
+      "url": "http://localhost:${PORT:-8765}/mcp-stream",
+      "enabled": true
+    }
+  }
+}</code></pre>
+
+<p><strong>方案 A2：自定义 JSON-RPC 端点（轻量，仅 tools/list + tools/call）</strong></p>
+<pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "local-search": {
+      "type": "remote",
+      "url": "http://localhost:${PORT:-8765}/mcp",
+      "enabled": true
+    }
+  }
+}</code></pre>
+
+<div class="note">
+<strong>说明：</strong>
+<ul>
+  <li><code>/mcp-stream</code> 使用 MCP SDK 的 <code>StreamableHTTPServerTransport</code>，支持完整的初始化协商和能力发现。</li>
+  <li><code>/mcp</code> 是自定义的 JSON-RPC 处理器，仅实现 <code>initialize</code>、<code>tools/list</code>、<code>tools/call</code>、<code>resources/list</code>。对大部分使用场景已足够。</li>
+</ul>
+</div>
+
+<h3>方式 B：本地命令（stdio 模式 — 无需 Docker）</h3>
+<p>OpenCode 直接启动 Node.js 进程。需要项目依赖已安装（<code>npm install</code>）。</p>
+
+<pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "local-search": {
+      "type": "local",
+      "command": ["node", "/path/to/local-search-mcp/src/mcp_server.js"],
+      "enabled": true,
+      "timeout": 120000
+    }
+  }
+}</code></pre>
+
+<div class="warn">
+<strong>限制：</strong>stdio 模式下的 <code>mcp_server.js</code> 仅暴露核心工具（<code>search_web</code>、<code>fetch_page</code>、<code>search_and_fetch</code>、<code>research_problem</code>、<code>get_artifact</code>、<code>engine_status</code>）。论文工具（<code>search_papers</code>、<code>research_deep</code> 等）和缓存工具在 stdio 模式下<strong>不可用</strong>。如需完整功能，请使用 Docker + 远程连接（方式 A）。
+</div>
+
+<h2>可用工具</h2>
+
+<table>
+<thead>
+<tr><th>工具名称</th><th>说明</th><th>需要 ENABLE_PAPER_TOOLS</th></tr>
+</thead>
+<tbody>
+<tr><td><code>search_web</code></td><td>通用网页搜索（Tavily / Google / Bing）</td><td>否</td></tr>
+<tr><td><code>fetch_page</code></td><td>抓取网页内容（Playwright 浏览器）</td><td>否</td></tr>
+<tr><td><code>search_and_fetch</code></td><td>搜索 + 自动抓取</td><td>否</td></tr>
+<tr><td><code>research_problem</code></td><td>研究问题（多轮搜索 + 分析）</td><td>否</td></tr>
+<tr><td><code>get_artifact</code></td><td>获取保存的 artifact</td><td>否</td></tr>
+<tr><td><code>engine_status</code></td><td>引擎状态</td><td>否</td></tr>
+<tr><td><code>search_papers</code></td><td>学术论文搜索</td><td>是</td></tr>
+<tr><td><code>lookup_paper</code></td><td>论文详情查询</td><td>是</td></tr>
+<tr><td><code>expand_paper_citations</code></td><td>论文引用展开</td><td>是</td></tr>
+<tr><td><code>find_open_access</code></td><td>OA 版本查找</td><td>是</td></tr>
+<tr><td><code>research_papers</code></td><td>多轮论文研究</td><td>是</td></tr>
+<tr><td><code>research_deep</code></td><td>深度研究（含全文本获取能力）</td><td>是</td></tr>
+<tr><td><code>locate_paper_content</code></td><td>定位论文全文本 URL</td><td>是</td></tr>
+<tr><td><code>fetch_paper_content</code></td><td>获取并提取论文全文本段落</td><td>是</td></tr>
+<tr><td><code>get_paper_sections</code></td><td>按 paper_key 读取缓存的章节</td><td>是</td></tr>
+<tr><td><code>paper_cache_stats</code></td><td>论文缓存统计</td><td>否（独立启用）</td></tr>
+<tr><td><code>paper_cache_cleanup</code></td><td>论文缓存清理（默认 dry-run）</td><td>否（独立启用）</td></tr>
+</tbody>
+</table>
+
+<div class="note">
+<strong>注意：</strong><code>paper_cache_stats</code> 和 <code>paper_cache_cleanup</code> 不需要 <code>ENABLE_PAPER_TOOLS=true</code>，它们依赖 <code>PAPER_CACHE_ENABLED=true</code>（默认即启用）。所有其他论文工具需要 <code>ENABLE_PAPER_TOOLS=true</code>。
+</div>
+
+<h2>环境变量参考</h2>
+
+<table>
+<thead>
+<tr><th>变量</th><th>默认值</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td><code>PORT</code></td><td><code>8765</code></td><td>HTTP 监听端口</td></tr>
+<tr><td><code>ENABLE_PAPER_TOOLS</code></td><td><code>false</code></td><td>启用论文工具</td></tr>
+<tr><td><code>PAPER_CACHE_ENABLED</code></td><td><code>true</code></td><td>启用论文缓存</td></tr>
+<tr><td><code>OPENALEX_API_KEY</code></td><td>—</td><td>OpenAlex API 密钥（https://openalex.org/keys）</td></tr>
+<tr><td><code>CROSSREF_MAILTO</code></td><td>—</td><td>Crossref 邮箱（提高频率限制）</td></tr>
+<tr><td><code>UNPAYWALL_EMAIL</code></td><td>—</td><td>Unpaywall 邮箱</td></tr>
+<tr><td><code>BROWSER_PROXY_SERVER</code></td><td>—</td><td>浏览器代理（headless 模式）</td></tr>
+<tr><td><code>VISIBLE_BROWSER_PROXY_SERVER</code></td><td>—</td><td>浏览器代理（可见模式）</td></tr>
+<tr><td><code>LAN_PROXY_SERVER</code></td><td>—</td><td>LAN 代理</td></tr>
+</tbody>
+</table>
+
+<h2>验证配置</h2>
+
+<p>配置完成后，启动 OpenCode 并执行：</p>
+
+<pre><code>/status</code></pre>
+
+<p>在输出的 MCP Servers 段中应能看到 <code>local-search</code> 及其工具列表。也可以直接调用：</p>
+
+<pre><code>使用 search_web 搜索 "quantum computing"</code></pre>
+
+<p>或（如果启用了论文工具）：</p>
+
+<pre><code>使用 search_papers 搜索 "transformer attention"</code></pre>
+
+<h2>文件路径参考</h2>
+
+<p>项目内部涉及的关键路径（Docker 容器内）：</p>
+
+<table>
+<thead>
+<tr><th>功能</th><th>路径</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>论文缓存</td><td><code>/app/data/paper-cache/</code></td><td>manifest.json + raw/ + sections/ 子目录</td></tr>
+<tr><td>论文内容提取</td><td><code>/app/src/papers/content/</code></td><td>contentTypeDetector, documentFetcher, paperContentLocator, paperContentKernel, sectionChunker + extractors/</td></tr>
+<tr><td>artifact 存储</td><td><code>/app/data/artifacts/</code></td><td>JSON artifact 文件</td></tr>
+<tr><td>浏览器状态</td><td><code>/app/data/browser-state/</code></td><td>Playwright 会话状态</td></tr>
+</tbody>
+</table>
+
+<h2>常见问题</h2>
+
+<h3>OpenCode 看不到工具列表</h3>
+<ul>
+  <li>确认 <code>docker compose ps</code> 显示容器正常运行</li>
+  <li>确认 <code>curl http://localhost:8765/health</code> 返回 <code>{"ok":true}</code></li>
+  <li>检查 OpenCode 配置文件中 <code>mcp</code> 段格式正确（JSON 语法错误）</li>
+  <li>尝试将配置放在 <code>~/.config/opencode/opencode.json</code> 全局配置中而非项目配置</li>
+</ul>
+
+<h3>论文工具返回 "unknown tool"</h3>
+<ul>
+  <li>确认 <code>.env</code> 中设置了 <code>ENABLE_PAPER_TOOLS=true</code></li>
+  <li>重启 Docker 容器：<code>docker compose restart</code></li>
+  <li>检查容器日志：<code>docker compose logs</code> 应看到 "Paper sources requiring config" 相关提示</li>
+</ul>
+
+<h3>research_deep 超时</h3>
+<ul>
+  <li>OpenCode 默认 MCP 超时为 30 秒。对于深度研究，建议增加到 120 秒以上：<code>"timeout": 180000</code></li>
+  <li>确保配置了论文 API 密钥；缺失密钥会导致论文源不可用，研究无法进行</li>
+</ul>
+
+<h3>缓存工具无法使用</h3>
+<ul>
+  <li>确认 <code>.env</code> 中有 <code>PAPER_CACHE_ENABLED=true</code>（默认值）</li>
+  <li>缓存工具（<code>paper_cache_stats</code>、<code>paper_cache_cleanup</code>）独立于 <code>ENABLE_PAPER_TOOLS</code></li>
+</ul>
+
+<h3>远程连接在项目级配置中不生效</h3>
+<ul>
+  <li>OpenCode 已知 issue：MCP 服务器在项目级 <code>opencode.json</code> 中有时无法被识别。</li>
+  <li><strong>解决方法：</strong>将 MCP 配置放在全局配置文件 <code>~/.config/opencode/opencode.json</code> 中。</li>
+</ul>
+
+</body>
+</html>

@@ -60,7 +60,7 @@ export const DEFAULT_HEADERS = {
 };
 
 export async function fetchWithTimeout(url, opts = {}) {
-  const { timeoutMs = 15000, proxyUrl = null, headers = {}, method = 'GET' } = opts;
+  const { timeoutMs = 15000, proxyUrl = null, headers = {}, method = 'GET', body } = opts;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -70,6 +70,12 @@ export async function fetchWithTimeout(url, opts = {}) {
       signal: controller.signal,
       redirect: 'follow'
     };
+    if (body !== undefined && body !== null) {
+      init.body = body;
+      if (typeof body === 'string' && !init.headers['content-type']) {
+        init.headers['content-type'] = 'application/json';
+      }
+    }
     if (proxyUrl && /^https?:\/\//i.test(proxyUrl)) {
       init.dispatcher = new ProxyAgent(proxyUrl);
     }

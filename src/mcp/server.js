@@ -1,7 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-export function createMcpServer(kernel, browserPool) {
+export function createMcpServer(kernel, browserPool, { paperKernel, paperContentKernel, paperCacheStore, paperCacheCleanup } = {}) {
   const server = new McpServer(
     {
       name: 'local-search-mcp',

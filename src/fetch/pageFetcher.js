@@ -28,6 +28,13 @@ export class PageFetcher {
       try {
         const result = await this.fetchBrowser(url, { maxChars, proxyProfile, timeoutMs: opts.timeout_ms || opts.timeoutMs });
         attempts.push(result.attempt);
+        if (result.status === 'captcha') {
+          const retry = await this.fetchBrowser(url, { maxChars, proxyProfile, timeoutMs: opts.timeout_ms || opts.timeoutMs, allowImages: true });
+          attempts.push(retry.attempt);
+          if (retry.keepPageOpen) delete retry.keepPageOpen;
+          return { ...retry, attempts };
+        }
+        if (result.keepPageOpen) delete result.keepPageOpen;
         return { ...result, attempts };
       } catch (err) {
         attempts.push({ mode: 'browser', status: 'failed', code: err.code || 'BROWSER_FETCH_ERROR', message: err.message });
@@ -69,9 +76,9 @@ export class PageFetcher {
     };
   }
 
-  async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs } = {}) {
+  async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs, allowImages } = {}) {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
-    return await this.browserPool.withPage({ proxyProfile, url }, async (page) => {
+    return await this.browserPool.withPage({ proxyProfile, url, allowImages }, async (page) => {
       try {
         await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs || CONFIG.browserTimeoutMs });
       } catch (e) {
@@ -82,8 +89,24 @@ export class PageFetcher {
       let text = await page.evaluate(() => document.body ? document.body.innerText : '');
       const title = await page.title().catch(() => '');
       text = normalizeWhitespace(text);
-      if (isLikelyBlockedText(text)) throw Object.assign(new Error('page appears blocked/captcha'), { code: 'PAGE_BLOCKED_OR_CAPTCHA' });
-      if (!text || text.length < 80) throw Object.assign(new Error('browser extracted text too short'), { code: 'EXTRACTION_EMPTY' });
+      if (!text || text.length < 80) {
+        const isCaptcha = text.length > 0 && (text.includes('captcha') || text.includes('verify') || text.includes('security') || text.includes('blocked') || text.includes('automated') || text.length < 50);
+        if (isCaptcha || text.length < 20) {
+          return {
+            status: 'captcha', url, title: normalizeWhitespace(title),
+            text_preview: '', text_chars: 0, artifact_ref: null,
+            fetch_mode: 'browser', failure_code: 'PAGE_BLOCKED_OR_CAPTCHA',
+            keepPageOpen: true,
+            attempt: { mode: 'browser', status: 'failed', code: 'PAGE_BLOCKED_OR_CAPTCHA', message: 'page shows captcha/blocked check', proxy_profile: proxy.profile }
+          };
+        }
+        return {
+          status: 'failed', url, title: '', text_preview: '', text_chars: 0,
+          artifact_ref: null, fetch_mode: 'browser',
+          failure_code: 'EXTRACTION_EMPTY',
+          attempt: { mode: 'browser', status: 'failed', code: 'EXTRACTION_EMPTY', message: 'extracted text too short', proxy_profile: proxy.profile }
+        };
+      }
       const saved = truncateText(text, Math.max(maxChars, 12000));
       const artifact_ref = this.artifactStore.writeText('pages', saved, { url, title, fetch_mode: 'browser', proxy_profile: proxy.profile });
       return {

@@ -5,6 +5,8 @@ DISPLAY_NUMBER="${DISPLAY:-:99}"
 SCREEN_GEOMETRY="${LOCAL_SEARCH_SCREEN_GEOMETRY:-1920x1080x24}"
 VNC_PORT="${LOCAL_SEARCH_VNC_PORT:-5900}"
 NOVNC_PORT="${LOCAL_SEARCH_NOVNC_PORT:-6080}"
+VNC_LISTEN="${LOCAL_SEARCH_VNC_LISTEN:-127.0.0.1}"
+NOVNC_LISTEN="${LOCAL_SEARCH_NOVNC_LISTEN:-127.0.0.1}"
 VISIBLE_BROWSER_CDP_PORT="${VISIBLE_BROWSER_CDP_PORT:-9224}"
 VISIBLE_BROWSER_PROFILE_DIR="${VISIBLE_BROWSER_PROFILE_DIR:-/data/browser-profile}"
 VISIBLE_BROWSER_START_URL="${VISIBLE_BROWSER_START_URL:-https://chatgpt.com/auth/login}"
@@ -56,10 +58,10 @@ x11vnc \
   -shared \
   -nopw \
   -rfbport "${VNC_PORT}" \
-  -listen 0.0.0.0 >/tmp/x11vnc.log 2>&1 &
+  -listen "${VNC_LISTEN}" >/tmp/x11vnc.log 2>&1 &
 X11VNC_PID=$!
 
-websockify --web=/usr/share/novnc/ "${NOVNC_PORT}" "localhost:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
+websockify --web=/usr/share/novnc/ "${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
 WEBSOCKIFY_PID=$!
 
 
@@ -141,15 +143,24 @@ CHROMIUM_ARGS=(
   "--password-store=basic"
   "--start-maximized"
   "--ozone-platform=x11"
+ 
   "--remote-debugging-port=${VISIBLE_BROWSER_CDP_PORT}"
   "--remote-debugging-address=127.0.0.1"
   "--user-data-dir=${VISIBLE_BROWSER_PROFILE_DIR}"
   "--no-sandbox"
-  "${VISIBLE_BROWSER_START_URL}"
 )
+
+UBLOCK_DIR="/app/extensions/ublock-origin"
+if [ -d "${UBLOCK_DIR}" ]; then
+  CHROMIUM_ARGS+=("--disable-extensions-except=${UBLOCK_DIR}")
+  CHROMIUM_ARGS+=("--load-extension=${UBLOCK_DIR}")
+fi
+
+CHROMIUM_ARGS+=("${VISIBLE_BROWSER_START_URL}")
 
 if [[ -n "${VISIBLE_BROWSER_PROXY_SERVER}" ]]; then
   CHROMIUM_ARGS+=("--proxy-server=${VISIBLE_BROWSER_PROXY_SERVER}")
+  CHROMIUM_ARGS+=("--proxy-bypass-list=<-loopback>")
 fi
 
 cleanup_browser_profile_locks() {

@@ -25,6 +25,8 @@ export class SearchKernel {
       proxyProfile: args.proxy_profile || args.proxyProfile || 'auto',
       timeoutMs: args.timeout_ms || args.timeoutMs
     });
+    const fetchTopK = Math.min(search.results.length, Math.max(0, Number(args.fetch_top_k ?? args.fetchTopK ?? 10)));
+    const maxCharsTotal = Number(args.max_chars_total || args.maxCharsTotal || 30000);
     const query_id = 'q_' + crypto.createHash('sha1').update(query + Date.now()).digest('hex').slice(0, 12);
     const payload = {
       query_id,
@@ -38,6 +40,62 @@ export class SearchKernel {
       fallback_skipped: search.fallback_skipped || [],
       created_at: new Date().toISOString()
     };
+    if (fetchTopK > 0) {
+      const selected = search.results.slice(0, fetchTopK);
+      const perPageTimeout = 30000;
+      const fetched = await mapLimit(selected, CONFIG.maxFetchConcurrency, async (result) => {
+        try {
+          const proxyProfile = this.proxyRouter.resolveForEngine(result.engine, result.url).profile;
+          const page = await Promise.race([
+            this.fetchPage({
+              url: result.url,
+              mode: args.fetch_mode || args.mode || 'auto',
+              proxy_profile: proxyProfile,
+              max_chars: Math.max(2000, Math.floor(maxCharsTotal / Math.max(1, fetchTopK))),
+              timeout_ms: args.timeout_ms || args.timeoutMs
+            }),
+            new Promise((_, reject) => setTimeout(
+              () => reject(Object.assign(new Error('fetch timed out'), { code: 'FETCH_TIMEOUT' })),
+              perPageTimeout
+            ))
+          ]);
+          return { result, page, status: 'success' };
+        } catch (err) {
+          return { result, page: null, status: 'failed', error: { code: err.code || 'FETCH_ERROR', message: err.message } };
+        }
+      });
+      const items = [];
+      const fetchFailures = [];
+      for (const row of fetched) {
+        if (row.status !== 'success' || !row.page) {
+          const code = row.error?.code || 'FETCH_FAILED';
+          const msg = row.error?.message || 'fetch failed';
+          fetchFailures.push({ url: row.result.url, engine: row.result.engine, code, message: msg });
+        } else if (row.page.status === 'success') {
+          const text = String(row.page.text_preview || '').replace(/<[^>]*>/g, '');
+          items.push({
+            title: row.result.title,
+            url: row.result.url,
+            host: hostOf(row.result.url),
+            snippet: row.result.snippet,
+            engine: row.result.engine,
+            rank: row.result.rank,
+            fetch_mode: row.page.fetch_mode,
+            text_preview: truncateText(text, 1800),
+            artifact_ref: row.page.artifact_ref,
+            source_type: classifySource(row.result.url)
+          });
+        } else {
+          fetchFailures.push({ url: row.result.url, engine: row.result.engine, code: row.page.failure_code || 'FETCH_FAILED', message: row.page.attempts?.at(-1)?.message || 'fetch failed' });
+        }
+      }
+      payload.fetched = items;
+      payload.fetched_count = items.length;
+      payload.fetch_failures = fetchFailures;
+      if (fetchFailures.length > 0) {
+        payload.failures = [...(payload.failures || []), ...fetchFailures];
+      }
+    }
     const artifact_ref = this.artifactStore.writeText('search', JSON.stringify(payload, null, 2), { query, kind: 'search_results' });
     return { ...payload, artifact_ref };
   }
@@ -49,55 +107,22 @@ export class SearchKernel {
 
   async searchAndFetch(args = {}) {
     const query = requiredString(args.query, 'query');
-    const limit = limit20(args.limit);
-    const engines = normalizeEnginesForSearch(args.engines, this.engines);
-    const totalPagesLimit = 30;
-    const pagesPerEngine = Math.floor(totalPagesLimit / engines.length);
-    const fetchTopK = Math.min(limit, Math.max(1, args.fetch_top_k ?? args.fetchTopK ?? pagesPerEngine));
-    const maxCharsTotal = Number(args.max_chars_total || args.maxCharsTotal || 30000);
-    const search = await this.searchWeb({ ...args, query, limit, engines });
-    const selected = search.results.slice(0, fetchTopK);
-    const fetched = await mapLimit(selected, CONFIG.maxFetchConcurrency, async (result, index) => {
-      const page = await this.fetchPage({
-        url: result.url,
-        mode: args.fetch_mode || args.mode || 'auto',
-        proxy_profile: args.proxy_profile || args.proxyProfile || 'auto',
-        max_chars: Math.max(2000, Math.floor(maxCharsTotal / Math.max(1, fetchTopK))),
-        timeout_ms: args.timeout_ms || args.timeoutMs
-      });
-      return { result, page, index };
-    });
-    const items = [];
+    const search = await this.searchWeb(args);
+    const items = (search.fetched || []).map(f => ({
+      title: f.title, url: f.url, host: f.host,
+      snippet: f.snippet, engine: f.engine, rank: f.rank,
+      fetch_mode: f.fetch_mode, text_preview: f.text_preview,
+      artifact_ref: f.artifact_ref, source_type: f.source_type
+    }));
     const failures = [...(search.failures || [])];
-    for (const row of fetched) {
-      if (row.page.status === 'success') {
-        items.push({
-          title: row.result.title,
-          url: row.result.url,
-          host: hostOf(row.result.url),
-          snippet: row.result.snippet,
-          engine: row.result.engine,
-          rank: row.result.rank,
-          fetch_mode: row.page.fetch_mode,
-          text_preview: truncateText(row.page.text_preview, 1800),
-          artifact_ref: row.page.artifact_ref,
-          source_type: classifySource(row.result.url)
-        });
-      } else {
-        failures.push({ url: row.result.url, engine: row.result.engine, code: row.page.failure_code || 'FETCH_FAILED', message: row.page.attempts?.at(-1)?.message || 'fetch failed' });
-      }
-    }
     const bundle_id = 'eb_' + crypto.createHash('sha1').update(query + Date.now()).digest('hex').slice(0, 12);
     const bundle = {
-      type: 'evidence_bundle',
-      bundle_id,
-      query,
+      type: 'evidence_bundle', bundle_id, query,
       searched_results: search.results.length,
-      pages_requested: selected.length,
+      pages_requested: items.length + (search.fetch_failures || []).length,
       pages_fetched: items.length,
-      pages_skipped: selected.length - items.length,
-      items,
-      failures,
+      pages_skipped: (search.fetch_failures || []).length,
+      items, failures,
       search_artifact_ref: search.artifact_ref,
       search_fallback: search.fallback || null,
       search_fallback_attempted_for: search.fallback_attempted_for || [],
@@ -230,6 +255,11 @@ function limit20(v) {
 function normalizeEnginesForSearch(engines, registry) {
   if (!engines || engines.length === 0 || engines.includes('auto')) {
     return registry.defaultSearchEngines();
+  }
+  if (engines.includes('default')) {
+    const defaults = registry.defaultSearchEngines();
+    const others = engines.filter(e => e !== 'default' && e !== 'auto');
+    return [...new Set([...defaults, ...others])];
   }
   return engines;
 }

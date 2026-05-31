@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { chromium } from 'playwright';
 import { CONFIG, safeJoin } from '../config/index.js';
 
@@ -33,7 +34,8 @@ const LAUNCH_ARGS = [
   '--disable-blink-features=AutomationControlled',
   '--disable-features=IsolateOrigins,site-per-process',
   '--disable-infobars',
-  '--start-maximized'
+  '--start-maximized',
+  '--blink-settings=imagesEnabled=false'
 ];
 
 function randomUserAgent() {
@@ -224,10 +226,16 @@ export class PlaywrightPool {
   }
 
   launchOptions() {
+    const args = [...LAUNCH_ARGS];
+    const ublockDir = path.resolve(process.cwd(), 'extensions/ublock-origin');
+    if (fs.existsSync(ublockDir)) {
+      args.push(`--disable-extensions-except=${ublockDir}`);
+      args.push(`--load-extension=${ublockDir}`);
+    }
     return {
       headless: CONFIG.headless,
       ignoreDefaultArgs: ['--enable-automation'],
-      args: LAUNCH_ARGS
+      args
     };
   }
 
@@ -272,7 +280,7 @@ export class PlaywrightPool {
     return this.sharedContext;
   }
 
-  async hydrateSharedContext(context, sessionKey) {
+  async hydrateSessionContext(context, sessionKey) {
     if (!sessionKey || this.hydratedSharedSessions.has(sessionKey)) {
       return;
     }
@@ -316,9 +324,10 @@ export class PlaywrightPool {
 
   async getSessionContext(sessionKey, { proxyProfile = 'auto', url = '' } = {}) {
     const browser = await this.getBrowser();
+
     if (this.connectedBrowser) {
       const context = await this.getSharedContext();
-      await this.hydrateSharedContext(context, sessionKey);
+      await this.hydrateSessionContext(context, sessionKey);
       return { context, reusable: true, ownsContext: false, mode: 'shared-cdp' };
     }
 
@@ -334,6 +343,7 @@ export class PlaywrightPool {
 
     const proxy = this.proxyRouter?.resolve(proxyProfile, url)?.playwrightProxy;
     const context = await browser.newContext(this.buildContextOptions(proxy, sessionKey));
+    await this.hydrateSessionContext(context, sessionKey);
     this.sessionContexts.set(sessionKey, { context });
     return { context, reusable: true, ownsContext: false, mode: 'persistent-context' };
   }
@@ -361,6 +371,8 @@ export class PlaywrightPool {
     let ownsContext = false;
     if (sessionKey && reuseSession) {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
+    } else if (this.connectedBrowser) {
+      context = await this.getSharedContext();
     } else {
       context = await this.createEphemeralContext({ proxyProfile, url, sessionKey });
       ownsContext = true;
@@ -369,14 +381,21 @@ export class PlaywrightPool {
     const page = await context.newPage();
     page.setDefaultTimeout(CONFIG.browserTimeoutMs);
     await stealthPlugin(page);
+    let keepPageOpen = false;
     try {
-      return await fn(page, context);
+      const result = await fn(page, context);
+      if (result && result.keepPageOpen) {
+        keepPageOpen = true;
+      }
+      return result;
     } finally {
       if (sessionKey) {
         await this.persistContextState(context, sessionKey);
       }
-      await page.close().catch(() => {});
-      if (ownsContext) {
+      if (!keepPageOpen) {
+        await page.close().catch(() => {});
+      }
+      if (ownsContext && !keepPageOpen) {
         await context.close().catch(() => {});
       }
     }
@@ -392,7 +411,7 @@ export class PlaywrightPool {
     await this.getBrowser();
     if (this.connectedBrowser) {
       context = await this.getSharedContext();
-      await this.hydrateSharedContext(context, sessionKey);
+      await this.hydrateSessionContext(context, sessionKey);
       mode = 'shared-cdp';
     } else {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
@@ -403,6 +422,7 @@ export class PlaywrightPool {
       page = await context.newPage();
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
       await stealthPlugin(page);
+      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort());
       this.sessionPages.set(sessionKey, page);
     }
     if (url) {

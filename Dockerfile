@@ -14,7 +14,23 @@ ENV NODE_ENV=production \
     CDP_URL=http://localhost:9222 \
     PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH} \
     BRAVE_API_KEY= \
-    TAVILY_API_KEY=
+    TAVILY_API_KEY= \
+    PAPER_CACHE_ENABLED=true \
+    PAPER_CACHE_DIR=/data/cache/papers \
+    PAPER_CACHE_MANIFEST=/data/cache/papers/manifest.sqlite \
+    PAPER_CACHE_RAW_DIR=/data/cache/papers/raw \
+    PAPER_CACHE_TEXT_DIR=/data/cache/papers/text \
+    PAPER_CACHE_SECTION_DIR=/data/cache/papers/sections \
+    PAPER_CACHE_CHUNK_DIR=/data/cache/papers/chunks \
+    PAPER_CACHE_TMP_DIR=/data/cache/papers/tmp \
+    PAPER_CACHE_MAX_BYTES=10737418240 \
+    PAPER_CACHE_RAW_MAX_BYTES=4294967296 \
+    PAPER_CACHE_RAW_TTL_DAYS=7 \
+    PAPER_CACHE_TEXT_TTL_DAYS=90 \
+    PAPER_CACHE_BUNDLE_TTL_DAYS=30 \
+    PAPER_FETCH_MAX_BYTES=52428800 \
+    PAPER_FETCH_MAX_FULLTEXT_PAPERS=5 \
+    PAPER_FETCH_PRESERVE_RAW=false
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify openbox \
@@ -41,9 +57,18 @@ RUN set -eux; \
 COPY src ./src
 COPY config ./config
 COPY scripts ./scripts
+COPY extensions/ublock-origin.zip /app/extensions/ublock-origin.zip
+RUN mkdir -p /app/extensions/ublock-origin && python3 -c "import zipfile; z=zipfile.ZipFile('/app/extensions/ublock-origin.zip'); z.extractall('/app/extensions/ublock-origin/'); z.close()" && rm -f /app/extensions/ublock-origin.zip
 COPY docker/local-search/start.sh /usr/local/bin/start-local-search.sh
 RUN chmod +x /usr/local/bin/start-local-search.sh
-RUN mkdir -p /data/artifacts
+RUN mkdir -p \
+    /data/artifacts \
+    /data/cache/papers/raw \
+    /data/cache/papers/text \
+    /data/cache/papers/sections \
+    /data/cache/papers/chunks \
+    /data/cache/papers/tmp \
+    /data/cache/papers/locks
 
 EXPOSE 8765 6080
 CMD ["/usr/local/bin/start-local-search.sh"]

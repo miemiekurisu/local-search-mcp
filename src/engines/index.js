@@ -60,7 +60,7 @@ export class EngineRegistry {
     
     for (const engine of engines) {
       try {
-        const timeout = engine === 'google' || engine === 'bing' || engine === 'chatgpt' ? 30000 : 20000;
+        const timeout = engine === 'google' || engine === 'chatgpt' ? 60000 : engine === 'bing' ? 30000 : 20000;
         const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit }), timeout);
         all.push(...results);
       } catch (err) {
@@ -142,6 +142,11 @@ function withTimeout(promise, ms) {
 function normalizeEngines(engines, customEngines) {
   if (!engines || engines.length === 0 || engines.includes('auto')) {
     return ['duckduckgo', 'wikipedia', ...customEngines.map(e => e.id)];
+  }
+  if (engines.includes('default')) {
+    const defaults = ['duckduckgo', 'wikipedia', ...customEngines.map(e => e.id)];
+    const others = engines.filter(e => e !== 'default' && e !== 'auto');
+    return [...new Set([...defaults, ...others])];
   }
   return engines;
 }

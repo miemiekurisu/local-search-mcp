@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 export function normalizeWhitespace(s) {
   return String(s || '')
     .replace(/\u00a0/g, ' ')
@@ -73,30 +75,37 @@ export function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
 }
 
-const BLOCKED_DOMAINS = [
+const DEFAULT_BLOCKED_DOMAINS = [
   'baidu.com',
   'csdn.net',
   'csdn.blog',
-  'aiqiyi.com',
-  'youku.com',
-  'iqiyi.com',
-  'nipic.com',
-  'so.com',
-  'sogou.com',
-  'zhihu.com',
-  'toutiao.com',
-  'SegmentFault',
+  'segmentfault.com',
   'jianshu.com',
   'cnblogs.com',
-  'aliyun.com',
-  'tencent.com',
-  'cloudflare',
-  'security.verizon'
+  '51cto.com',
+  'cloudflare'
 ];
 
+let blockedDomains = null;
+
+function getBlockedDomains() {
+  if (blockedDomains) return blockedDomains;
+  try {
+    const configPath = process.env.BLOCKED_DOMAINS_FILE || '/app/config/blocked_domains.json';
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf8');
+      blockedDomains = JSON.parse(raw).map(d => d.toLowerCase());
+      return blockedDomains;
+    }
+  } catch {}
+  blockedDomains = DEFAULT_BLOCKED_DOMAINS;
+  return blockedDomains;
+}
+
 export function filterBlockedDomains(items) {
+  const domains = getBlockedDomains();
   return items.filter(item => {
     const host = hostOf(item.url || '');
-    return !BLOCKED_DOMAINS.some(d => host.includes(d));
+    return !domains.some(d => host.includes(d));
   });
 }

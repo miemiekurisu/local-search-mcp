@@ -15,7 +15,26 @@ export const CONFIG = {
   chromeDevtoolsMcpCommand: process.env.CHROME_DEVTOOLS_MCP_COMMAND || 'node_modules/.bin/chrome-devtools-mcp',
   chromeDevtoolsMcpBrowserUrl: process.env.CHROME_DEVTOOLS_MCP_BROWSER_URL || process.env.CDP_URL || 'http://127.0.0.1:9224',
   customEnginesFile: process.env.CUSTOM_ENGINES_FILE || '/app/config/search_engines.json',
-  proxyProfilesFile: process.env.PROXY_PROFILES_FILE || '/app/config/proxy_profiles.json'
+  proxyProfilesFile: process.env.PROXY_PROFILES_FILE || '/app/config/proxy_profiles.json',
+
+  paperCache: {
+    enabled: (process.env.PAPER_CACHE_ENABLED || 'true') !== 'false',
+    dir: process.env.PAPER_CACHE_DIR || '/data/cache/papers',
+    manifest: process.env.PAPER_CACHE_MANIFEST || '/data/cache/papers/manifest.sqlite',
+    rawDir: process.env.PAPER_CACHE_RAW_DIR || '/data/cache/papers/raw',
+    textDir: process.env.PAPER_CACHE_TEXT_DIR || '/data/cache/papers/text',
+    sectionDir: process.env.PAPER_CACHE_SECTION_DIR || '/data/cache/papers/sections',
+    chunkDir: process.env.PAPER_CACHE_CHUNK_DIR || '/data/cache/papers/chunks',
+    tmpDir: process.env.PAPER_CACHE_TMP_DIR || '/data/cache/papers/tmp',
+    maxBytes: clampInt(process.env.PAPER_CACHE_MAX_BYTES, 10 * 1024 * 1024 * 1024, 100 * 1024 * 1024, 1024 * 1024 * 1024 * 1024),
+    rawMaxBytes: clampInt(process.env.PAPER_CACHE_RAW_MAX_BYTES, 4 * 1024 * 1024 * 1024, 50 * 1024 * 1024, 1024 * 1024 * 1024 * 1024),
+    rawTtlDays: clampInt(process.env.PAPER_CACHE_RAW_TTL_DAYS, 7, 1, 365),
+    textTtlDays: clampInt(process.env.PAPER_CACHE_TEXT_TTL_DAYS, 90, 1, 3650),
+    bundleTtlDays: clampInt(process.env.PAPER_CACHE_BUNDLE_TTL_DAYS, 30, 1, 3650),
+    fetchMaxBytes: clampInt(process.env.PAPER_FETCH_MAX_BYTES, 50 * 1024 * 1024, 1024 * 1024, 500 * 1024 * 1024),
+    maxFulltextPapers: clampInt(process.env.PAPER_FETCH_MAX_FULLTEXT_PAPERS, 5, 1, 50),
+    preserveRaw: (process.env.PAPER_FETCH_PRESERVE_RAW || 'false') === 'true'
+  }
 };
 
 export function clampInt(v, fallback, min, max) {
@@ -42,6 +61,9 @@ export function ensureDir(p) {
 export function safeJoin(base, ...parts) {
   const target = path.resolve(base, ...parts);
   const resolvedBase = path.resolve(base);
-  if (!target.startsWith(resolvedBase)) throw new Error('unsafe path traversal');
+  const relative = path.relative(resolvedBase, target);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('unsafe path traversal');
+  }
   return target;
 }
