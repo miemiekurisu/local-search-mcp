@@ -3,10 +3,41 @@ import path from 'path';
 import crypto from 'crypto';
 import { CONFIG, ensureDir, safeJoin } from '../config/index.js';
 
+const ARTIFACT_TTL_MS = CONFIG.artifactTtlDays * 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 3600000;
+
 export class ArtifactStore {
   constructor(baseDir = CONFIG.artifactDir) {
     this.baseDir = baseDir;
     ensureDir(this.baseDir);
+    this._cleanupOld();
+    this._cleanupTimer = setInterval(() => this._cleanupOld(), CLEANUP_INTERVAL_MS);
+    this._cleanupTimer.unref();
+  }
+
+  _cleanupOld() {
+    try {
+      const now = Date.now();
+      const entries = fs.readdirSync(this.baseDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const dirPath = path.join(this.baseDir, entry.name);
+        try {
+          const files = fs.readdirSync(dirPath);
+          for (const file of files) {
+            if (!file.endsWith('.txt') && !file.endsWith('.json')) continue;
+            const filePath = path.join(dirPath, file);
+            const stat = fs.statSync(filePath);
+            if (now - stat.mtimeMs > ARTIFACT_TTL_MS) {
+              fs.unlinkSync(filePath);
+            }
+          }
+          if (fs.readdirSync(dirPath).length === 0) {
+            fs.rmdirSync(dirPath);
+          }
+        } catch {}
+      }
+    } catch {}
   }
 
   writeText(kind, text, metadata = {}) {

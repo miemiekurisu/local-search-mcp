@@ -8,6 +8,10 @@ const USE_EXISTING_CHROME = process.env.USE_EXISTING_CHROME === 'true';
 const EXISTING_CHROME_CONNECT_TIMEOUT_MS = envInt('EXISTING_CHROME_CONNECT_TIMEOUT_MS', 15000, 1000);
 const EXISTING_CHROME_CONNECT_RETRY_MS = envInt('EXISTING_CHROME_CONNECT_RETRY_MS', 500, 100);
 const VISIBLE_BROWSER_PROFILE_DIR = process.env.VISIBLE_BROWSER_PROFILE_DIR || null;
+const MAX_CONCURRENT_PAGES = envInt('MAX_CONCURRENT_PAGES', 10, 1);
+const MAX_SESSION_CONTEXTS = envInt('MAX_SESSION_CONTEXTS', 10, 1);
+const KEPT_PAGE_TTL_MS = envInt('KEPT_PAGE_TTL_MS', 300000, 10000);
+const KEPT_PAGE_CLEANUP_INTERVAL_MS = envInt('KEPT_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
 
 const BROWSER_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -136,6 +140,10 @@ export class PlaywrightPool {
     this.sessionContexts = new Map();
     this.sessionPages = new Map();
     this.hydratedSharedSessions = new Set();
+    this._activePageCount = 0;
+    this._keptPages = new Map();
+    this._keptPagesCleanupTimer = setInterval(() => this._cleanupKeptPages(), KEPT_PAGE_CLEANUP_INTERVAL_MS);
+    this._keptPagesCleanupTimer.unref();
   }
 
   async getBrowser() {
@@ -172,6 +180,17 @@ export class PlaywrightPool {
     this.sharedContext = null;
     this.sessionPages.clear();
     this.hydratedSharedSessions.clear();
+    this._resetKeptPages();
+  }
+
+  _resetKeptPages() {
+    for (const entry of this._keptPages.values()) {
+      entry.page.close().catch(() => {});
+      if (entry.ownsContext) {
+        entry.context.close().catch(() => {});
+      }
+    }
+    this._keptPages.clear();
   }
 
   async resolveCdpEndpoint() {
@@ -322,6 +341,29 @@ export class PlaywrightPool {
     }
   }
 
+  _cleanupKeptPages() {
+    const now = Date.now();
+    for (const [key, entry] of this._keptPages) {
+      if (now - entry.createdAt > KEPT_PAGE_TTL_MS) {
+        this._keptPages.delete(key);
+        entry.page.close().catch(() => {});
+        if (entry.ownsContext) {
+          entry.context.close().catch(() => {});
+        }
+      }
+    }
+  }
+
+  _evictSessionContext() {
+    if (this.sessionContexts.size < MAX_SESSION_CONTEXTS) return;
+    const oldestKey = this.sessionContexts.keys().next().value;
+    if (oldestKey) {
+      const oldest = this.sessionContexts.get(oldestKey);
+      oldest.context.close().catch(() => {});
+      this.sessionContexts.delete(oldestKey);
+    }
+  }
+
   async getSessionContext(sessionKey, { proxyProfile = 'auto', url = '' } = {}) {
     const browser = await this.getBrowser();
 
@@ -341,10 +383,11 @@ export class PlaywrightPool {
       }
     }
 
+    this._evictSessionContext();
     const proxy = this.proxyRouter?.resolve(proxyProfile, url)?.playwrightProxy;
     const context = await browser.newContext(this.buildContextOptions(proxy, sessionKey));
     await this.hydrateSessionContext(context, sessionKey);
-    this.sessionContexts.set(sessionKey, { context });
+    this.sessionContexts.set(sessionKey, { context, createdAt: Date.now() });
     return { context, reusable: true, ownsContext: false, mode: 'persistent-context' };
   }
 
@@ -367,11 +410,17 @@ export class PlaywrightPool {
   }
 
   async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false } = {}, fn) {
+    if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
+      throw Object.assign(new Error(`Too many concurrent page operations (max ${MAX_CONCURRENT_PAGES})`), { code: 'TOO_MANY_PAGES' });
+    }
+
     let context;
     let ownsContext = false;
+    const isCdpMode = Boolean(this.connectedBrowser);
+
     if (sessionKey && reuseSession) {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
-    } else if (this.connectedBrowser) {
+    } else if (isCdpMode) {
       context = await this.getSharedContext();
     } else {
       context = await this.createEphemeralContext({ proxyProfile, url, sessionKey });
@@ -381,6 +430,7 @@ export class PlaywrightPool {
     const page = await context.newPage();
     page.setDefaultTimeout(CONFIG.browserTimeoutMs);
     await stealthPlugin(page);
+    this._activePageCount++;
     let keepPageOpen = false;
     try {
       const result = await fn(page, context);
@@ -389,14 +439,20 @@ export class PlaywrightPool {
       }
       return result;
     } finally {
+      this._activePageCount--;
       if (sessionKey) {
         await this.persistContextState(context, sessionKey);
       }
-      if (!keepPageOpen) {
+      if (keepPageOpen) {
+        if (isCdpMode || ownsContext) {
+          this._keptPages.set(sessionKey || `_ephemeral_${Date.now()}`, { page, context, ownsContext, createdAt: Date.now() });
+          if (this._keptPages.size > 3) this._cleanupKeptPages();
+        }
+      } else {
         await page.close().catch(() => {});
-      }
-      if (ownsContext && !keepPageOpen) {
-        await context.close().catch(() => {});
+        if (ownsContext) {
+          await context.close().catch(() => {});
+        }
       }
     }
   }
@@ -419,6 +475,14 @@ export class PlaywrightPool {
 
     let page = this.sessionPages.get(sessionKey);
     if (!page || page.isClosed()) {
+      if (this.sessionPages.size >= MAX_SESSION_CONTEXTS) {
+        const oldestKey = this.sessionPages.keys().next().value;
+        if (oldestKey) {
+          const oldPage = this.sessionPages.get(oldestKey);
+          oldPage.close().catch(() => {});
+          this.sessionPages.delete(oldestKey);
+        }
+      }
       page = await context.newPage();
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
       await stealthPlugin(page);
@@ -477,6 +541,8 @@ export class PlaywrightPool {
   }
 
   async close() {
+    clearInterval(this._keptPagesCleanupTimer);
+    this._resetKeptPages();
     for (const page of this.sessionPages.values()) {
       await page.close().catch(() => {});
     }

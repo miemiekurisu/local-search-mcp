@@ -7,10 +7,39 @@ import { createMcpServer } from './mcp/server.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
+const RATE_LIMIT_WINDOW_MS = 60000;
+const RATE_LIMIT_MAX_REQUESTS = 60;
+
+const rateLimitMap = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitMap) {
+    if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
+      rateLimitMap.delete(key);
+    }
+  }
+}, 60000).unref();
+
+function rateLimiter(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const now = Date.now();
+  let entry = rateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+    entry = { windowStart: now, count: 0 };
+    rateLimitMap.set(ip, entry);
+  }
+  entry.count++;
+  if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+    return res.status(429).json({ ok: false, error: { code: 'RATE_LIMITED', message: 'Too many requests' } });
+  }
+  next();
+}
+
 const { kernel, browserPool } = createKernel();
 const mcpServer = createMcpServer(kernel, browserPool);
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+app.use(rateLimiter);
 
 function asyncRoute(fn) {
   return async (req, res) => {
@@ -259,6 +288,7 @@ mcpServer.connect(mcpTransport).catch(err => {
 });
 
 const server = app.listen(CONFIG.port, '0.0.0.0', () => {
+  server.maxConnections = 50;
   console.log(`[local-search-mcp] HTTP server listening on :${CONFIG.port}`);
   console.log(`[local-search-mcp] MCP JSON-RPC endpoint: http://localhost:${CONFIG.port}/mcp`);
   console.log(`[local-search-mcp] MCP Streamable HTTP endpoint: http://localhost:${CONFIG.port}/mcp-stream`);

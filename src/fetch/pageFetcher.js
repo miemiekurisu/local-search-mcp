@@ -28,13 +28,6 @@ export class PageFetcher {
       try {
         const result = await this.fetchBrowser(url, { maxChars, proxyProfile, timeoutMs: opts.timeout_ms || opts.timeoutMs });
         attempts.push(result.attempt);
-        if (result.status === 'captcha') {
-          const retry = await this.fetchBrowser(url, { maxChars, proxyProfile, timeoutMs: opts.timeout_ms || opts.timeoutMs, allowImages: true });
-          attempts.push(retry.attempt);
-          if (retry.keepPageOpen) delete retry.keepPageOpen;
-          return { ...retry, attempts };
-        }
-        if (result.keepPageOpen) delete result.keepPageOpen;
         return { ...result, attempts };
       } catch (err) {
         attempts.push({ mode: 'browser', status: 'failed', code: err.code || 'BROWSER_FETCH_ERROR', message: err.message });
@@ -76,9 +69,9 @@ export class PageFetcher {
     };
   }
 
-  async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs, allowImages } = {}) {
+  async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs } = {}) {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
-    return await this.browserPool.withPage({ proxyProfile, url, allowImages }, async (page) => {
+    return await this.browserPool.withPage({ proxyProfile, url }, async (page) => {
       try {
         await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs || CONFIG.browserTimeoutMs });
       } catch (e) {

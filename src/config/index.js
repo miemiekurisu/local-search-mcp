@@ -4,6 +4,7 @@ import path from 'path';
 export const CONFIG = {
   port: Number(process.env.PORT || 8765),
   artifactDir: process.env.ARTIFACT_DIR || '/data/artifacts',
+  artifactTtlDays: clampInt(process.env.ARTIFACT_TTL_DAYS, 7, 1, 365),
   browserStateDir: process.env.BROWSER_STATE_DIR || '/data/browser-state',
   defaultSearchLimit: clampInt(process.env.DEFAULT_SEARCH_LIMIT, 20, 1, 20),
   defaultFetchTopK: clampInt(process.env.DEFAULT_FETCH_TOP_K, 20, 1, 20),

@@ -144,15 +144,27 @@ export class SearchKernel {
     const queries = makeQueryFamilies(base, prefer).slice(0, maxQueries);
     const bundles = [];
     const failures = [];
+    const researchDeadline = Date.now() + 120000;
     for (const q of queries) {
+      if (Date.now() > researchDeadline) {
+        failures.push({ query: q, code: 'RESEARCH_TIMEOUT', message: 'Research total time limit exceeded' });
+        break;
+      }
       try {
-        const b = await this.searchAndFetch({
-          query: q,
-          limit: Math.min(20, Number(budget.max_results_per_query || 8)),
-          fetch_top_k: Math.max(1, Math.floor(maxPages / maxQueries)),
-          max_chars_total: Math.floor(Number(budget.max_chars_total || 50000) / maxQueries),
-          proxy_profile: args.network_policy?.proxy_profile || args.proxy_profile || 'auto'
-        });
+        const remaining = Math.max(15000, researchDeadline - Date.now());
+        const b = await Promise.race([
+          this.searchAndFetch({
+            query: q,
+            limit: Math.min(20, Number(budget.max_results_per_query || 8)),
+            fetch_top_k: Math.max(1, Math.floor(maxPages / maxQueries)),
+            max_chars_total: Math.floor(Number(budget.max_chars_total || 50000) / maxQueries),
+            proxy_profile: args.network_policy?.proxy_profile || args.proxy_profile || 'auto'
+          }),
+          new Promise((_, reject) => setTimeout(
+            () => reject(Object.assign(new Error('Query timed out'), { code: 'QUERY_TIMEOUT' })),
+            Math.min(remaining, 60000)
+          ))
+        ]);
         bundles.push(b);
       } catch (err) {
         failures.push({ query: q, code: err.code || 'RESEARCH_QUERY_FAILED', message: err.message });
