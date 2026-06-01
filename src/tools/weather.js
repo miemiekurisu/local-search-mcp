@@ -1,11 +1,11 @@
-import { pinyin } from 'pinyin-pro';
+import tinyPinyin from 'tiny-pinyin';
 
 const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
 function toPinyin(text) {
-  // Convert Chinese to concatenated pinyin (no spaces)
-  return pinyin(text, { toneType: 'none', type: 'array' }).join('');
+  // Convert Chinese to concatenated pinyin (no spaces, uppercase)
+  return tinyPinyin.convertToPinyin(text);
 }
 
 const WMO_CODES = {
@@ -46,13 +46,23 @@ async function geocode(location) {
   let queries = [];
 
   if (lang === 'zh') {
-    // Try progressively shorter Chinese suffixes, converted to concatenated pinyin
-    // e.g. "上海三林" -> "sanlin", "haisanlin", "shanghaisanlin"
-    for (let i = location.length - 2; i >= 0; i--) {
-      queries.push(toPinyin(location.slice(i)));
-    }
-    // Fallback: full pinyin
+    // Chinese geocoding strategy:
+    // 1. Full pinyin (e.g. "shanghaisanlin")
+    // 2. Prefix 2 chars (e.g. "黄浦" -> "huangpu" for districts)
+    // 3. Suffix 2 chars (e.g. "三林" -> "sanlin" for townships)
+    // 4. Prefix/Suffix 3-4 chars
     queries.push(toPinyin(location));
+
+    for (let len = 2; len <= Math.min(location.length, 4); len++) {
+      const prefix = location.slice(0, len);
+      const suffix = location.slice(-len);
+      if (prefix !== suffix) {
+        queries.push(toPinyin(prefix));
+        queries.push(toPinyin(suffix));
+      } else {
+        // Already added or will be covered
+      }
+    }
   } else {
     queries.push(location);
   }
