@@ -43,6 +43,16 @@ async function geocode(location) {
     }
   }
   if (!data || !data.results || data.results.length === 0) return null;
+
+  if (lang === 'zh') {
+    const enData = await fetchGeo(location, 'en');
+    if (enData && enData.results && enData.results.length > 0) {
+      const ids = new Set(data.results.map(r => r.id));
+      for (const r of enData.results) {
+        if (!ids.has(r.id)) data.results.push(r);
+      }
+    }
+  }
   return data.results;
 }
 
