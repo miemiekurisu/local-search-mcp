@@ -11,6 +11,17 @@
 - 内置 HTTP 接口，便于 `curl` 手工验证。
 - 同时提供 MCP stdio 入口，后续可接 Local Claw / Claude Code 类客户端。
 
+## 0. 分支说明
+
+| 分支 | 平台 | Dockerfile 基础镜像 | 说明 |
+|------|------|---------------------|------|
+| `main` | x86_64 / macOS | `playwright:v1.59.1-noble` | 主分支，含完整 Chromium + 系统依赖 |
+| `arm64` | ARM (aarch64) | `node:22-bookworm` | 自装 Chromium，避开 overlay2 xattr 问题 |
+
+**为什么分两个分支**：部分 ARM 设备（如 TN3399）内核较旧（5.8.1），overlay2 不支持 xattr，导致 playwright 基础镜像无法 `docker pull`（报错 `failed to register layer: lsetxattr security.capability`）。arm64 分支换用纯 Node 镜像自行安装 Chromium，绕过此限制。
+
+**开发流程**：在 `main` 上开发 → push → ARM 机器上 `git merge main && git pull && docker compose up -d --build`。
+
 ## 1. 快速启动
 
 ```bash
