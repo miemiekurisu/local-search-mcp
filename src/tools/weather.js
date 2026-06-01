@@ -36,11 +36,20 @@ function windDir(deg) {
 
 async function geocode(location) {
   const lang = detectLanguage(location);
-  const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(location)}&count=10&language=${lang}&format=json`);
-  const data = await res.json();
-  if (!data.results || data.results.length === 0) return null;
+  let data = await fetchGeo(location, lang);
+  if (!data || !data.results || data.results.length === 0) {
+    if (lang !== 'en') {
+      data = await fetchGeo(location, 'en');
+    }
+  }
+  if (!data || !data.results || data.results.length === 0) return null;
   const r = data.results[0];
   return { name: r.name, country: r.country, admin1: r.admin1 || '', latitude: r.latitude, longitude: r.longitude };
+}
+
+async function fetchGeo(name, lang) {
+  const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(name)}&count=10&language=${lang}&format=json`);
+  return await res.json();
 }
 
 async function fetchWeather(lat, lon) {
