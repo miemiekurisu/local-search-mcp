@@ -1,5 +1,5 @@
-const GEO_API = 'https://geocoding-api.open-meteo.com/v1/search';
-const WEATHER_API = 'https://api.open-meteo.com/v1/forecast';
+const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
+const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
 const WEATHER_CODES = {
   0: '☀️ 晴朗', 1: '🌤️ 大致晴朗', 2: '⛅ 多云', 3: '☁️ 阴天',
@@ -39,7 +39,7 @@ async function fetchWeather(lat, lon, { forecastDays = 1, hourly = false } = {})
   if (hourly) {
     params.set('hourly', 'temperature_2m,relative_humidity_2m,precipitation_probability,precipitation,weather_code');
   }
-  const res = await fetch(`${WEATHER_API}?${params}`);
+  const res = await fetch(`${FORECAST_URL}?${params}`);
   return await res.json();
 }
 
