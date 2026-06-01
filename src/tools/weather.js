@@ -1,22 +1,36 @@
 const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
-const WEATHER_CODES = {
-  0: '☀️ 晴朗', 1: '🌤️ 大致晴朗', 2: '⛅ 多云', 3: '☁️ 阴天',
-  45: '🌫️ 雾', 48: '🌫️ 雾凇',
-  51: '🌦️ 小毛毛雨', 53: '🌦️ 毛毛雨', 55: '🌧️ 中毛毛雨',
-  56: '🌧️ 冻毛毛雨', 57: '🌧️ 强冻毛毛雨',
-  61: '🌧️ 小雨', 63: '🌧️ 中雨', 65: '🌧️ 大雨',
-  66: '🌧️ 冻雨', 67: '🌧️ 强冻雨',
-  71: '🌨️ 小雪', 73: '🌨️ 中雪', 75: '❄️ 大雪',
-  77: '🌨️ 雪粒',
-  80: '🌦️ 小阵雨', 81: '🌧️ 中阵雨', 82: '🌧️ 大阵雨',
-  85: '🌨️ 小阵雪', 86: '🌨️ 大阵雪',
-  95: '⛈️ 雷暴', 96: '⛈️ 雷暴冰雹', 99: '⛈️ 强雷暴冰雹'
+const WMO_CODES = {
+  0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+  45: 'Foggy', 48: 'Rime fog',
+  51: 'Light drizzle', 53: 'Moderate drizzle', 55: 'Dense drizzle',
+  56: 'Light freezing drizzle', 57: 'Dense freezing drizzle',
+  61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
+  66: 'Light freezing rain', 67: 'Heavy freezing rain',
+  71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
+  77: 'Snow grains',
+  80: 'Slight shower', 81: 'Moderate shower', 82: 'Violent shower',
+  85: 'Slight snow shower', 86: 'Heavy snow shower',
+  95: 'Thunderstorm', 96: 'Thunderstorm with slight hail', 99: 'Thunderstorm with heavy hail'
 };
 
+function detectLanguage(text) {
+  const chinese = /[\u4e00-\u9fff]/;
+  const hiragana = /[\u3040-\u309f]/;
+  const katakana = /[\u30a0-\u30ff]/;
+  const french = /[àâæéèêëîïôùûüÿçœ]/i;
+  const german = /[äöüß]/;
+  if (hiragana.test(text) || katakana.test(text)) return 'ja';
+  if (chinese.test(text)) return 'zh';
+  if (german.test(text)) return 'de';
+  if (french.test(text)) return 'fr';
+  return 'en';
+}
+
 async function geocode(location) {
-  const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(location)}&count=10&language=zh&format=json`);
+  const lang = detectLanguage(location);
+  const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(location)}&count=10&language=${lang}&format=json`);
   const data = await res.json();
   if (!data.results || data.results.length === 0) {
     return { error: `找不到位置: ${location}` };
