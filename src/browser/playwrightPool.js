@@ -12,6 +12,8 @@ const MAX_CONCURRENT_PAGES = envInt('MAX_CONCURRENT_PAGES', 10, 1);
 const MAX_SESSION_CONTEXTS = envInt('MAX_SESSION_CONTEXTS', 10, 1);
 const KEPT_PAGE_TTL_MS = envInt('KEPT_PAGE_TTL_MS', 300000, 10000);
 const KEPT_PAGE_CLEANUP_INTERVAL_MS = envInt('KEPT_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
+const SESSION_PAGE_TTL_MS = envInt('SESSION_PAGE_TTL_MS', 600000, 60000);
+const SESSION_PAGE_CLEANUP_INTERVAL_MS = envInt('SESSION_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
 
 const BROWSER_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -236,6 +238,8 @@ export class PlaywrightPool {
     this._keptPages = new Map();
     this._keptPagesCleanupTimer = setInterval(() => this._cleanupKeptPages(), KEPT_PAGE_CLEANUP_INTERVAL_MS);
     this._keptPagesCleanupTimer.unref();
+    this._sessionPagesCleanupTimer = setInterval(() => this._cleanupSessionPages(), SESSION_PAGE_CLEANUP_INTERVAL_MS);
+    this._sessionPagesCleanupTimer.unref();
   }
 
   async getBrowser() {
@@ -571,22 +575,25 @@ export class PlaywrightPool {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
     }
 
-    let page = this.sessionPages.get(sessionKey);
-    if (!page || page.isClosed()) {
-      if (this.sessionPages.size >= MAX_SESSION_CONTEXTS) {
-        const oldestKey = this.sessionPages.keys().next().value;
-        if (oldestKey) {
-          const oldPage = this.sessionPages.get(oldestKey);
-          oldPage.close().catch(() => {});
-          this.sessionPages.delete(oldestKey);
+    let pageEntry = this.sessionPages.get(sessionKey);
+    if (!pageEntry || pageEntry.page.isClosed()) {
+        if (this.sessionPages.size >= MAX_SESSION_CONTEXTS) {
+          const oldestKey = this.sessionPages.keys().next().value;
+          if (oldestKey) {
+            const oldEntry = this.sessionPages.get(oldestKey);
+            oldEntry.page.close().catch(() => {});
+            this.sessionPages.delete(oldestKey);
+          }
         }
+        page = await context.newPage();
+        page.setDefaultTimeout(CONFIG.browserTimeoutMs);
+        await stealthPlugin(page);
+        await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort());
+        pageEntry = { page, lastAccessedAt: Date.now() };
+        this.sessionPages.set(sessionKey, pageEntry);
+      } else {
+        pageEntry.lastAccessedAt = Date.now();
       }
-      page = await context.newPage();
-      page.setDefaultTimeout(CONFIG.browserTimeoutMs);
-      await stealthPlugin(page);
-      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort());
-      this.sessionPages.set(sessionKey, page);
-    }
     if (url) {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: CONFIG.browserTimeoutMs });
     }
@@ -617,9 +624,26 @@ export class PlaywrightPool {
     };
   }
 
+  _cleanupSessionPages() {
+    const now = Date.now();
+    const promises = [];
+    for (const [key, entry] of this.sessionPages) {
+      if (now - entry.lastAccessedAt > SESSION_PAGE_TTL_MS || entry.page.isClosed()) {
+        this.sessionPages.delete(key);
+        if (!entry.page.isClosed()) {
+          promises.push(entry.page.close().catch(() => {}));
+        }
+      }
+    }
+    if (promises.length > 0) {
+      Promise.all(promises).catch(() => {});
+    }
+  }
+
   sessionStatus(sessionKey) {
     const statePath = this.getSessionStatePath(sessionKey);
-    const pinnedPage = this.sessionPages.get(sessionKey);
+    const entry = this.sessionPages.get(sessionKey);
+    const pinnedPage = entry ? entry.page : null;
     return {
       session: sessionKey,
       saved_state_exists: Boolean(statePath && fs.existsSync(statePath)),
@@ -640,9 +664,10 @@ export class PlaywrightPool {
 
   async close() {
     clearInterval(this._keptPagesCleanupTimer);
+    clearInterval(this._sessionPagesCleanupTimer);
     await this._resetKeptPages();
-    for (const page of this.sessionPages.values()) {
-      await page.close().catch(() => {});
+    for (const entry of this.sessionPages.values()) {
+      await entry.page.close().catch(() => {});
     }
     this.sessionPages.clear();
     for (const { context } of this.sessionContexts.values()) {
