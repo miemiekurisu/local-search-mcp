@@ -34,7 +34,7 @@ ENV NODE_ENV=production \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify openbox \
        fonts-liberation fonts-noto-cjk \
-       libasound2t64 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
+       libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
        libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 \
        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxshmfence1 libxtst6 \
        wget ca-certificates \
