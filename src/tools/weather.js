@@ -16,8 +16,7 @@ const WEATHER_CODES = {
 };
 
 async function geocode(location) {
-  const url = `${GEO_API}?name=${encodeURIComponent(location)}&count=1&language=zh`;
-  const res = await fetch(url);
+  const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(location)}&count=10&language=en&format=json`);
   const data = await res.json();
   if (!data.results || data.results.length === 0) {
     return { error: `找不到位置: ${location}` };
