@@ -3,6 +3,12 @@ import { pinyin } from 'pinyin-pro';
 const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
+function toPinyinWords(text) {
+  // Convert Chinese to pinyin, splitting into space-separated words
+  const result = pinyin(text, { toneType: 'none', type: 'array', segment: true });
+  return result.filter(Boolean);
+}
+
 const WMO_CODES = {
   0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
   45: 'Foggy', 48: 'Rime fog',
@@ -38,18 +44,26 @@ function windDir(deg) {
 
 async function geocode(location) {
   const lang = detectLanguage(location);
-  let queryName = location;
-  let queryLang = lang;
+  let queries = [];
 
-  // Chinese queries: convert to pinyin, search with language=en
   if (lang === 'zh') {
-    queryName = pinyin(location, { toneType: 'none', type: 'array' }).join(' ');
-    queryLang = 'en';
+    const words = toPinyinWords(location);
+    // Try full pinyin first, then progressively shorter suffixes
+    queries.push(words.join(' '));
+    for (let i = words.length - 2; i >= 0; i--) {
+      queries.push(words.slice(i).join(' '));
+    }
+  } else {
+    queries.push(location);
   }
 
-  const data = await fetchGeo(queryName, queryLang);
-  if (!data || !data.results || data.results.length === 0) return null;
-  return data.results;
+  for (const q of queries) {
+    const data = await fetchGeo(q, 'en');
+    if (data && data.results && data.results.length > 0) {
+      return data.results;
+    }
+  }
+  return null;
 }
 
 async function fetchGeo(name, lang) {
