@@ -207,6 +207,16 @@ app.post('/mcp', async (req, res) => {
           inputSchema: { type: 'object', properties: {} }
         },
         {
+          name: 'get_time',
+          description: 'Get current time and date. Supports timezone queries like "Beijing", "Tokyo", "UTC", "New York", "London". Default timezone from TIMEZONE env var.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Timezone hint: "UTC", "Beijing", "Tokyo", "New York", "London", etc.' }
+            }
+          }
+        },
+        {
           name: 'get_weather',
           description: 'Get current weather and forecast for a location using Open-Meteo API. Free, no API key needed.',
           inputSchema: {
