@@ -11,6 +11,7 @@ export class PageFetcher {
   }
 
   async fetchPage(url, opts = {}) {
+    url = this.normalizeUrl(url);
     const mode = opts.mode || 'auto';
     const maxChars = Number(opts.max_chars || opts.maxChars || 12000);
     const proxyProfile = opts.proxy_profile || opts.proxyProfile || 'auto';
@@ -44,6 +45,18 @@ export class PageFetcher {
       failure_code: attempts.at(-1)?.code || 'FETCH_FAILED',
       attempts
     };
+  }
+
+  normalizeUrl(url) {
+    try {
+      const u = new URL(url);
+      if (u.hostname === 'www.reddit.com') {
+        u.hostname = 'old.reddit.com';
+      }
+      return u.toString();
+    } catch {
+      return url;
+    }
   }
 
   async fetchHttp(url, { maxChars, proxyProfile, timeoutMs } = {}) {
