@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 export const CONFIG = {
+  timezone: process.env.TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone,
   port: Number(process.env.PORT || 8765),
   artifactDir: process.env.ARTIFACT_DIR || '/data/artifacts',
   artifactTtlDays: clampInt(process.env.ARTIFACT_TTL_DAYS, 7, 1, 365),

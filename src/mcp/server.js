@@ -181,6 +181,17 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     return textContent(result.content);
   }));
 
+  server.registerTool('get_time', {
+    title: 'Get Current Time',
+    description: 'Get current time and date. Supports timezone queries like "Beijing", "Tokyo", "UTC", "New York", "London". Default timezone from TIMEZONE env var.',
+    inputSchema: {
+      query: z.string().optional().describe('Timezone hint: "UTC", "Beijing", "Tokyo", "New York", "London", etc.')
+    }
+  }, wrapHandler(async (args) => {
+    const { getCurrentTime } = await import('../tools/time.js');
+    return textContent(getCurrentTime(args?.query).content);
+  }));
+
   server.registerTool('engine_status', {
     title: 'Engine Status',
     description: 'Return available search engines, proxy profiles, browser session status, and rate limits.',

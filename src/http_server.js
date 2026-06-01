@@ -100,6 +100,7 @@ app.post('/mcp', async (req, res) => {
             'Quick start: use search_web to search DuckDuckGo + Wikipedia (no login needed).',
             'Add "google", "bing", or "chatgpt" to engines[] for browser-based search.',
             'Use get_weather to get weather forecast for any location.'
+            'Use get_time to get current time with timezone support.'
           ].join('\n')
         }
       });
@@ -254,6 +255,12 @@ app.post('/mcp', async (req, res) => {
         case 'engine_status': {
           const r = kernel.engineStatus();
           result = { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+          break;
+        }
+        case 'get_time': {
+          const { getCurrentTime } = await import('./tools/time.js');
+          const r = getCurrentTime(args?.query);
+          result = { content: [{ type: 'text', text: r.content }] };
           break;
         }
         case 'get_weather': {
