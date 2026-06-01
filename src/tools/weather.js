@@ -100,9 +100,16 @@ function formatLocationOptions(results) {
     '📍 找到多个同名地点，请选择:',
     ''
   ];
+  const isChinese = /[\u4e00-\u9fff]/.test(results[0]?.name || '');
+  const sorted = [...results].sort((a, b) => {
+    const aCN = a.country_code === 'CN' ? 1 : 0;
+    const bCN = b.country_code === 'CN' ? 1 : 0;
+    if (aCN !== bCN) return bCN - aCN;
+    return (b.population || 0) - (a.population || 0);
+  });
   const seen = new Set();
-  for (let i = 0; i < Math.min(results.length, 5); i++) {
-    const r = results[i];
+  for (let i = 0; i < Math.min(sorted.length, 5); i++) {
+    const r = sorted[i];
     const region = r.admin1 || '';
     const country = r.country || '';
     const key = `${r.name}-${region}-${country}`;
