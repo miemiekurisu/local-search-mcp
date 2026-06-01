@@ -262,7 +262,7 @@ app.post('/mcp', async (req, res) => {
           if (r.error) {
             result = { content: [{ type: 'text', text: r.error }], isError: true };
           } else {
-            result = { content: [{ type: 'text', text: r.content }] };
+            result = { content: [{ type: 'text', text: r.content }], locationOptions: r.type === 'location_options' ? r.locations : undefined };
           }
           break;
         }

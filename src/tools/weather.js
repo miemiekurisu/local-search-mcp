@@ -43,8 +43,7 @@ async function geocode(location) {
     }
   }
   if (!data || !data.results || data.results.length === 0) return null;
-  const r = data.results[0];
-  return { name: r.name, country: r.country, admin1: r.admin1 || '', latitude: r.latitude, longitude: r.longitude };
+  return data.results;
 }
 
 async function fetchGeo(name, lang) {
@@ -96,15 +95,44 @@ function formatWeather(loc, data) {
   return lines.join('\n');
 }
 
+function formatLocationOptions(results) {
+  const lines = [
+    '📍 找到多个同名地点，请选择:',
+    ''
+  ];
+  const seen = new Set();
+  for (let i = 0; i < Math.min(results.length, 5); i++) {
+    const r = results[i];
+    const region = r.admin1 || '';
+    const country = r.country || '';
+    const key = `${r.name}-${region}-${country}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const lat = r.latitude.toFixed(2);
+    const lon = r.longitude.toFixed(2);
+    lines.push(`${i + 1}. ${r.name} (${region}, ${country})  坐标: ${lat}, ${lon}`);
+  }
+  lines.push('');
+  lines.push('请回复序号或重新查询更精确的名称。');
+  return lines.join('\n');
+}
+
 export async function searchWeather(query) {
   if (!query) return { error: '请输入城市名称，例如："北京" 或 "Tokyo"' };
 
-  let loc = await geocode(query);
-  if (loc) {
-    const data = await fetchWeather(loc.latitude, loc.longitude);
-    if (data.error) return { error: `天气数据获取失败: ${data.error}` };
-    return { title: `${loc.name} 天气`, content: formatWeather(loc, data), location: loc, source: 'open-meteo.com' };
+  const results = await geocode(query);
+  if (!results) {
+    return { error: `找不到位置: ${query}` };
   }
 
-  return { error: `找不到位置: ${query}` };
+  if (results.length > 1) {
+    return { content: formatLocationOptions(results), type: 'location_options', locations: results.slice(0, 5) };
+  }
+
+  const r = results[0];
+  const loc = { name: r.name, country: r.country, admin1: r.admin1 || '', latitude: r.latitude, longitude: r.longitude };
+  const data = await fetchWeather(loc.latitude, loc.longitude);
+  if (data.error) return { error: `天气数据获取失败: ${data.error}` };
+
+  return { title: `${loc.name} 天气`, content: formatWeather(loc, data), location: loc, source: 'open-meteo.com' };
 }

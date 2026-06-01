@@ -177,6 +177,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     const { searchWeather } = await import('../tools/weather.js');
     const result = await searchWeather(args.location);
     if (result.error) return errorContent(result.error);
+    if (result.type === 'location_options') return textContent(result.content);
     return textContent(result.content);
   }));
 
