@@ -80,49 +80,141 @@ async function stealthPlugin(page) {
       get: () => undefined,
       configurable: true
     });
-    
-    window.navigator.chrome = {
-      runtime: {},
-      webstore: {}
+
+    /* ---- Chrome Runtime API ---- */
+    const makeEvent = () => {
+      const listeners = [];
+      const on = (cb) => listeners.push(cb);
+      const off = (cb) => { const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1); };
+      const dispatch = (a, b, c) => { listeners.forEach(cb => { try { cb(a, b, c); } catch (_e) {} }); };
+      Object.assign(on, { off, dispatch });
+      return on;
     };
-    
+
+    const chromeObj = {
+      runtime: {
+        OnMessageEvent: makeEvent(),
+        onMessage: makeEvent(),
+        onConnect: makeEvent(),
+        sendMessage: () => {},
+        connect: () => ({ onMessage: makeEvent(), onDisconnect: makeEvent(), postMessage: () => {} }),
+        getPlatformInfo: () => Promise.resolve({ os: 'mac' }),
+        Id: String,
+        LastError: null,
+        PlatformOs: { MAC: 'mac', WIN: 'win', LINUX: 'linux', ANDROID: 'android', CROS: 'cros' },
+        RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available', THROTTLED: 'throttled' },
+        UpdateCheckStatus: { NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available', THROTTLED: 'throttled' }
+      },
+      webstore: {
+        OnInstallReason: { CHROME_UPDATE: 'chrome_update', USER: 'user', ADMINISTATOR: 'administator', SHARED_MODULE: 'shared_module' },
+        OnUpdateAvailableEvent: makeEvent(),
+        onInstallStageChanged: makeEvent(),
+        onDownloadProgress: makeEvent(),
+        onInstallReason: makeEvent(),
+        onUpdateAvailable: makeEvent()
+      },
+      app: {
+        isInstalled: false,
+        GetInstallStateReturnType: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        getIsInstalled: () => false,
+        getInstallState: () => 'not_installed'
+      }
+    };
+
+    try {
+      Object.defineProperty(navigator, 'chrome', {
+        get: () => chromeObj,
+        configurable: true,
+        writable: true
+      });
+    } catch (_e) {}
+    window.chrome = chromeObj;
+
+    /* ---- chrome.loadTimes / chrome.csi (deprecated but still detected) ---- */
+    const fakeLoadTimes = () => ({
+      connectionInfo: { type: 'unknown' },
+      npnNegotiatedProtocol: 'h2',
+      navigationType: 'Other',
+      wasFetchedViaSpdy: true,
+      wasAlternateProtocolAvailable: false,
+      requestTime: Date.now() / 1000,
+      finishTime: Date.now() / 1000,
+      endTime: () => Date.now() / 1000
+    });
+    try { window.chrome.loadTimes = fakeLoadTimes; } catch (_e) {}
+    try {
+      window.chrome.csi = () => ({
+        onloadT: Math.floor(Date.now() / 1000) - 1,
+        pageT: Math.floor(Math.random() * 500),
+        tran: Math.floor(Math.random() * 10) + 1
+      });
+    } catch (_e) {}
+
+    /* ---- chrome.csi for timing ---- */
+    try {
+      const origGet = Object.getOwnPropertyDescriptor(PerformanceTiming.prototype, 'connectEnd') || null;
+    } catch (_e) {}
+
+    /* ---- navigator.plugins ---- */
+    const pluginList = [
+      { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format, version 1.4', length: 1 },
+      { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+      { name: 'Chrome PDF Plugin', filename: 'pdf.dll', description: 'Portable Document Format', length: 1 },
+      { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+      { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 }
+    ];
+    pluginList.forEach(p => { p.enabled = true; });
     Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5],
+      get: () => pluginList,
       configurable: true
     });
-    
+
+    /* ---- navigator.mimeTypes ---- */
+    const mimeList = [
+      { type: 'application/pdf', suffixes: 'pdf', description: '', _enabledPlugin: pluginList[0] },
+      { type: 'text/html', suffixes: 'html,hmt,htm', description: '', _enabledPlugin: pluginList[0] }
+    ];
     Object.defineProperty(navigator, 'mimeTypes', {
-      get: () => [],
+      get: () => mimeList,
       configurable: true
     });
-    
+
+    /* ---- navigator.languages ---- */
     Object.defineProperty(navigator, 'languages', {
       get: () => ['en-US', 'en'],
       configurable: true
     });
-    
+
+    /* ---- navigator.hardwareConcurrency ---- */
     Object.defineProperty(navigator, 'hardwareConcurrency', {
-      get: () => [4, 8, 12, 16][Math.floor(Math.random() * 4)],
+      get: () => 8,
       configurable: true
     });
-    
+
+    /* ---- navigator.deviceMemory ---- */
     Object.defineProperty(navigator, 'deviceMemory', {
-      get: () => [4, 8, 16][Math.floor(Math.random() * 3)],
+      get: () => 8,
       configurable: true
     });
-    
+
+    /* ---- navigator.maxTouchPoints ---- */
     Object.defineProperty(navigator, 'maxTouchPoints', {
       get: () => 0,
       configurable: true
     });
-    
-    window.cdc_adoQnsasSS = window.chrome = void 0;
+
+    /* ---- cdc_ markers ---- */
+    window.cdc_adoQnsasSS = void 0;
     window.$cdc_asdjflasutopfhvcZLmcif_ = void 0;
-    
-    const originalQuery = window.indexedDB.open;
-    window.indexedDB.open = function() {
-      return originalQuery.apply(this, arguments);
-    };
+
+    /* ---- indexedDB (no-op passthrough, prevents detection of override) ---- */
+    try {
+      const origOpen = window.indexedDB.open;
+      window.indexedDB.open = function () {
+        return origOpen.apply(this, arguments);
+      };
+    } catch (_e) {}
   });
 }
 
@@ -183,13 +275,15 @@ export class PlaywrightPool {
     this._resetKeptPages();
   }
 
-  _resetKeptPages() {
+  async _resetKeptPages() {
+    const promises = [];
     for (const entry of this._keptPages.values()) {
-      entry.page.close().catch(() => {});
+      promises.push(entry.page.close().catch(() => {}));
       if (entry.ownsContext) {
-        entry.context.close().catch(() => {});
+        promises.push(entry.context.close().catch(() => {}));
       }
     }
+    await Promise.all(promises);
     this._keptPages.clear();
   }
 
@@ -343,14 +437,18 @@ export class PlaywrightPool {
 
   _cleanupKeptPages() {
     const now = Date.now();
+    const promises = [];
     for (const [key, entry] of this._keptPages) {
       if (now - entry.createdAt > KEPT_PAGE_TTL_MS) {
         this._keptPages.delete(key);
-        entry.page.close().catch(() => {});
+        promises.push(entry.page.close().catch(() => {}));
         if (entry.ownsContext) {
-          entry.context.close().catch(() => {});
+          promises.push(entry.context.close().catch(() => {}));
         }
       }
+    }
+    if (promises.length > 0) {
+      Promise.all(promises).catch(() => {});
     }
   }
 
@@ -542,7 +640,7 @@ export class PlaywrightPool {
 
   async close() {
     clearInterval(this._keptPagesCleanupTimer);
-    this._resetKeptPages();
+    await this._resetKeptPages();
     for (const page of this.sessionPages.values()) {
       await page.close().catch(() => {});
     }
@@ -551,8 +649,14 @@ export class PlaywrightPool {
       await context.close().catch(() => {});
     }
     this.sessionContexts.clear();
-    if (this.sharedContext && !this.connectedBrowser) {
-      await this.sharedContext.close().catch(() => {});
+    if (this.sharedContext) {
+      const pages = this.sharedContext.pages().filter(p => !p.isClosed());
+      for (const page of pages) {
+        await page.close().catch(() => {});
+      }
+      if (!this.connectedBrowser) {
+        await this.sharedContext.close().catch(() => {});
+      }
     }
     this.sharedContext = null;
     if (this.connectedBrowser) {
