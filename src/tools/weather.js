@@ -1,3 +1,5 @@
+import { pinyin } from 'pinyin-pro';
+
 const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
@@ -36,23 +38,17 @@ function windDir(deg) {
 
 async function geocode(location) {
   const lang = detectLanguage(location);
-  let data = await fetchGeo(location, lang);
-  if (!data || !data.results || data.results.length === 0) {
-    if (lang !== 'en') {
-      data = await fetchGeo(location, 'en');
-    }
-  }
-  if (!data || !data.results || data.results.length === 0) return null;
+  let queryName = location;
+  let queryLang = lang;
 
+  // Chinese queries: convert to pinyin, search with language=en
   if (lang === 'zh') {
-    const enData = await fetchGeo(location, 'en');
-    if (enData && enData.results && enData.results.length > 0) {
-      const ids = new Set(data.results.map(r => r.id));
-      for (const r of enData.results) {
-        if (!ids.has(r.id)) data.results.push(r);
-      }
-    }
+    queryName = pinyin(location, { toneType: 'none', type: 'array' }).join(' ');
+    queryLang = 'en';
   }
+
+  const data = await fetchGeo(queryName, queryLang);
+  if (!data || !data.results || data.results.length === 0) return null;
   return data.results;
 }
 
