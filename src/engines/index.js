@@ -53,6 +53,7 @@ export class EngineRegistry {
 
   async searchMany(query, opts = {}) {
     const limit = Math.min(opts.limit || CONFIG.defaultSearchLimit, CONFIG.maxSearchLimit);
+    const poolLimit = Math.max(limit, Math.min(limit * 2, CONFIG.maxSearchLimit * 2));
     const engines = normalizeEngines(opts.engines, this.customEngines);
     const failures = [];
     const all = [];
@@ -60,8 +61,8 @@ export class EngineRegistry {
     
     for (const engine of engines) {
       try {
-        const timeout = engine === 'google' || engine === 'chatgpt' ? 60000 : engine === 'bing' ? 30000 : 20000;
-        const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit }), timeout);
+        const timeout = engine === 'chatgpt' ? 120000 : engine === 'google' ? 60000 : engine === 'bing' ? 30000 : 20000;
+        const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit: poolLimit }), timeout);
         all.push(...results);
       } catch (err) {
         failures.push(this.buildFailure(engine, err));
@@ -87,7 +88,7 @@ export class EngineRegistry {
     }
     
     return {
-      results: uniqueByUrl(all, limit).slice(0, limit),
+      results: uniqueByUrl(all, poolLimit).slice(0, poolLimit),
       failures,
       engines_tried: engines,
       fallback: fallbackWarning,

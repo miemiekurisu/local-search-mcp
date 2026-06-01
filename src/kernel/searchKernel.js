@@ -40,10 +40,10 @@ export class SearchKernel {
       fallback_skipped: search.fallback_skipped || [],
       created_at: new Date().toISOString()
     };
-    if (fetchTopK > 0) {
-      const selected = search.results.slice(0, fetchTopK);
+    if (fetchTopK > 0 && search.results.length > 0) {
+      const pool = search.results;
       const perPageTimeout = 30000;
-      const fetched = await mapLimit(selected, CONFIG.maxFetchConcurrency, async (result) => {
+      const allFetched = await mapLimit(pool, CONFIG.maxFetchConcurrency, async (result) => {
         try {
           const proxyProfile = this.proxyRouter.resolveForEngine(result.engine, result.url).profile;
           const page = await Promise.race([
@@ -66,7 +66,7 @@ export class SearchKernel {
       });
       const items = [];
       const fetchFailures = [];
-      for (const row of fetched) {
+      for (const row of allFetched) {
         if (row.status !== 'success' || !row.page) {
           const code = row.error?.code || 'FETCH_FAILED';
           const msg = row.error?.message || 'fetch failed';
@@ -89,8 +89,8 @@ export class SearchKernel {
           fetchFailures.push({ url: row.result.url, engine: row.result.engine, code: row.page.failure_code || 'FETCH_FAILED', message: row.page.attempts?.at(-1)?.message || 'fetch failed' });
         }
       }
-      payload.fetched = items;
-      payload.fetched_count = items.length;
+      payload.fetched = items.slice(0, fetchTopK);
+      payload.fetched_count = payload.fetched.length;
       payload.fetch_failures = fetchFailures;
       if (fetchFailures.length > 0) {
         payload.failures = [...(payload.failures || []), ...fetchFailures];

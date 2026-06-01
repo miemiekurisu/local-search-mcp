@@ -1,4 +1,6 @@
-import tinyPinyin from 'tiny-pinyin';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const tinyPinyin = require('tiny-pinyin');
 
 const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';

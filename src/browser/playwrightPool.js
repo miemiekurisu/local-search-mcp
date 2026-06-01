@@ -575,7 +575,8 @@ export class PlaywrightPool {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
     }
 
-    let pageEntry = this.sessionPages.get(sessionKey);
+  let pageEntry = this.sessionPages.get(sessionKey);
+    let page;
     if (!pageEntry || pageEntry.page.isClosed()) {
         if (this.sessionPages.size >= MAX_SESSION_CONTEXTS) {
           const oldestKey = this.sessionPages.keys().next().value;
@@ -592,6 +593,7 @@ export class PlaywrightPool {
         pageEntry = { page, lastAccessedAt: Date.now() };
         this.sessionPages.set(sessionKey, pageEntry);
       } else {
+        page = pageEntry.page;
         pageEntry.lastAccessedAt = Date.now();
       }
     if (url) {
@@ -685,7 +687,7 @@ export class PlaywrightPool {
     }
     this.sharedContext = null;
     if (this.connectedBrowser) {
-      await this.connectedBrowser.close().catch(() => {});
+      // connectedBrowser is externally-managed (CDP-visible Chromium), don't kill it
       this.connectedBrowser = null;
     }
     if (this.browser) {

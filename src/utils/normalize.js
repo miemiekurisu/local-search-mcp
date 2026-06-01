@@ -32,14 +32,25 @@ export function stripTrackingUrl(url) {
   }
 }
 
+const TRACKING_PARAMS = [
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
+  'fbclid', 'gclid', 'gclsrc', 'dclid', 'msclkid',
+  'ref', 'ref_src', 'ref_url', 'source',
+  'ved', 'usg', 'usqp',
+  'si', 'srsltid', 'rio',
+  'wbraid', 'gbraid', 'ysclid'
+];
+
 export function canonicalUrl(url) {
   try {
     const u = new URL(url);
     u.hash = '';
-    for (const p of ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'ved', 'usg']) {
+    for (const p of TRACKING_PARAMS) {
       u.searchParams.delete(p);
     }
-    return u.toString();
+    let result = u.toString();
+    result = result.replace(/^https?:\/\/(www\d?\.)/, '://');
+    return result;
   } catch {
     return url;
   }

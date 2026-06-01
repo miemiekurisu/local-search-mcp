@@ -307,7 +307,7 @@ app.post('/mcp', async (req, res) => {
     });
   } catch (err) {
     console.error('[mcp-http] error:', err);
-    res.json({
+    res.status(500).json({
       jsonrpc: '2.0',
       id: req.body?.id ?? null,
       error: { code: -32603, message: err.message || 'Internal error' }
