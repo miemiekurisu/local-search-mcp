@@ -241,17 +241,18 @@ while true; do
   fi
 
   if ! process_is_alive "${XVFB_PID}"; then
-    echo "Xvfb exited; stopping local-search-mcp so Docker can restart it" >&2
-    kill_if_running "${APP_PID}"
-    shutdown
-    exit 1
+    echo "Xvfb exited; restarting Xvfb..." >&2
+    Xvfb "${DISPLAY_NUMBER}" -screen 0 "${SCREEN_GEOMETRY}" -ac >/tmp/xvfb.log 2>&1 &
+    XVFB_PID=$!
+    sleep 1
+    echo "Xvfb restarted with pid=${XVFB_PID}" >&2
   fi
 
   if ! process_is_alive "${OPENBOX_PID}"; then
-    echo "openbox exited; stopping local-search-mcp so Docker can restart it" >&2
-    kill_if_running "${APP_PID}"
-    shutdown
-    exit 1
+    echo "openbox exited; restarting openbox..." >&2
+    openbox >/tmp/openbox.log 2>&1 &
+    OPENBOX_PID=$!
+    echo "openbox restarted with pid=${OPENBOX_PID}" >&2
   fi
 
   if ! process_is_alive "${CHROMIUM_SUPERVISOR_PID}"; then
