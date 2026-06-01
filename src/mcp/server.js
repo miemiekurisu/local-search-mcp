@@ -15,7 +15,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
         prompts: {}
       },
       instructions: [
-        'This server provides 6 tools for web search and evidence gathering.',
+        'This server provides 7 tools for web search, weather, and evidence gathering.',
         '',
         'Quick start:',
         '  - Use search_web to search DuckDuckGo + Wikipedia via HTTP (no login, no browser needed).',
@@ -165,6 +165,19 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     }
   }, wrapHandler(async (args) => {
     return jsonContent(kernel.getArtifact(args));
+  }));
+
+  server.registerTool('get_weather', {
+    title: 'Get Weather',
+    description: 'Get current weather and forecast for a location using Open-Meteo API. Free, no API key needed. Returns current conditions, 7-day forecast, and hourly forecast.',
+    inputSchema: {
+      location: z.string().min(1).describe('City name or location, e.g. "Beijing", "Tokyo", "Shanghai"')
+    }
+  }, wrapHandler(async (args) => {
+    const { searchWeather } = await import('../tools/weather.js');
+    const result = await searchWeather(args.location);
+    if (result.error) return errorContent(result.error);
+    return textContent(result.content);
   }));
 
   server.registerTool('engine_status', {
