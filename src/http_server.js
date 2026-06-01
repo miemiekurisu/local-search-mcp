@@ -96,9 +96,10 @@ app.post('/mcp', async (req, res) => {
           },
           serverInfo: { name: 'local-search-mcp', version: '0.1.0' },
           instructions: [
-            'This server provides 6 tools for web search and evidence gathering.',
+            'This server provides 7 tools for web search, weather, and evidence gathering.',
             'Quick start: use search_web to search DuckDuckGo + Wikipedia (no login needed).',
-            'Add "google", "bing", or "chatgpt" to engines[] for browser-based search.'
+            'Add "google", "bing", or "chatgpt" to engines[] for browser-based search.',
+            'Use get_weather to get weather forecast for any location.'
           ].join('\n')
         }
       });
@@ -203,6 +204,17 @@ app.post('/mcp', async (req, res) => {
           name: 'engine_status',
           description: 'Return available search engines, proxy profiles, browser session status, and rate limits.',
           inputSchema: { type: 'object', properties: {} }
+        },
+        {
+          name: 'get_weather',
+          description: 'Get current weather and forecast for a location using Open-Meteo API. Free, no API key needed.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              location: { type: 'string', description: 'City name or location, e.g. "Beijing", "Tokyo"' }
+            },
+            required: ['location']
+          }
         }
       ];
       return res.json({ jsonrpc: '2.0', id: message.id, result: { tools } });
@@ -242,6 +254,16 @@ app.post('/mcp', async (req, res) => {
         case 'engine_status': {
           const r = kernel.engineStatus();
           result = { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+          break;
+        }
+        case 'get_weather': {
+          const { searchWeather } = await import('./tools/weather.js');
+          const r = await searchWeather(args?.location);
+          if (r.error) {
+            result = { content: [{ type: 'text', text: r.error }], isError: true };
+          } else {
+            result = { content: [{ type: 'text', text: r.content }] };
+          }
           break;
         }
         default:
