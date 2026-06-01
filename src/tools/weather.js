@@ -3,10 +3,9 @@ import { pinyin } from 'pinyin-pro';
 const GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 
-function toPinyinWords(text) {
-  // Convert Chinese to pinyin, splitting into space-separated words
-  const result = pinyin(text, { toneType: 'none', type: 'array', segment: true });
-  return result.filter(Boolean);
+function toPinyin(text) {
+  // Convert Chinese to concatenated pinyin (no spaces)
+  return pinyin(text, { toneType: 'none', type: 'array' }).join('');
 }
 
 const WMO_CODES = {
@@ -47,12 +46,13 @@ async function geocode(location) {
   let queries = [];
 
   if (lang === 'zh') {
-    const words = toPinyinWords(location);
-    // Try full pinyin first, then progressively shorter suffixes
-    queries.push(words.join(' '));
-    for (let i = words.length - 2; i >= 0; i--) {
-      queries.push(words.slice(i).join(' '));
+    // Try progressively shorter Chinese suffixes, converted to concatenated pinyin
+    // e.g. "上海三林" -> "sanlin", "haisanlin", "shanghaisanlin"
+    for (let i = location.length - 2; i >= 0; i--) {
+      queries.push(toPinyin(location.slice(i)));
     }
+    // Fallback: full pinyin
+    queries.push(toPinyin(location));
   } else {
     queries.push(location);
   }
