@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.59.1-noble
+FROM node:22-bookworm
 
 WORKDIR /app
 ARG PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -29,11 +29,15 @@ ENV NODE_ENV=production \
     PAPER_CACHE_TEXT_TTL_DAYS=90 \
     PAPER_CACHE_BUNDLE_TTL_DAYS=30 \
     PAPER_FETCH_MAX_BYTES=52428800 \
-    PAPER_FETCH_MAX_FULLTEXT_PAPERS=5 \
     PAPER_FETCH_PRESERVE_RAW=false
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify openbox \
+       fonts-liberation fonts-noto-cjk \
+       libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
+       libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 \
+       libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxshmfence1 libxtst6 \
+       wget ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json* ./
