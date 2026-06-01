@@ -96,10 +96,10 @@ app.post('/mcp', async (req, res) => {
           },
           serverInfo: { name: 'local-search-mcp', version: '0.1.0' },
           instructions: [
-            'This server provides 7 tools for web search, weather, and evidence gathering.',
+            'This server provides 8 tools for web search, weather, time, and evidence gathering.',
             'Quick start: use search_web to search DuckDuckGo + Wikipedia (no login needed).',
             'Add "google", "bing", or "chatgpt" to engines[] for browser-based search.',
-            'Use get_weather to get weather forecast for any location.'
+            'Use get_weather to get weather forecast for any location.',
             'Use get_time to get current time with timezone support.'
           ].join('\n')
         }
