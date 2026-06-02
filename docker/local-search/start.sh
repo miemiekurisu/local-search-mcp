@@ -5,9 +5,9 @@ DISPLAY_NUMBER="${DISPLAY:-:99}"
 SCREEN_GEOMETRY="${LOCAL_SEARCH_SCREEN_GEOMETRY:-1920x1080x24}"
 VNC_PORT="${LOCAL_SEARCH_VNC_PORT:-5900}"
 NOVNC_PORT="${LOCAL_SEARCH_NOVNC_PORT:-6080}"
-VNC_LISTEN="${LOCAL_SEARCH_VNC_LISTEN:-127.0.0.1}"
-NOVNC_LISTEN="${LOCAL_SEARCH_NOVNC_LISTEN:-127.0.0.1}"
+VNC_LISTEN="${LOCAL_SEARCH_VNC_LISTEN:-0.0.0.0}"
 VISIBLE_BROWSER_CDP_PORT="${VISIBLE_BROWSER_CDP_PORT:-9224}"
+NOVNC_PASSWORD="${NOVNC_PASSWORD:-}"
 VISIBLE_BROWSER_PROFILE_DIR="${VISIBLE_BROWSER_PROFILE_DIR:-/data/browser-profile}"
 VISIBLE_BROWSER_START_URL="${VISIBLE_BROWSER_START_URL:-https://chatgpt.com/auth/login}"
 VISIBLE_BROWSER_PROXY_SERVER="${VISIBLE_BROWSER_PROXY_SERVER:-}"
@@ -52,16 +52,30 @@ sleep 1
 openbox >/tmp/openbox.log 2>&1 &
 OPENBOX_PID=$!
 
+# VNC password
+VNC_ARGS=()
+if [[ -n "${NOVNC_PASSWORD}" ]]; then
+  VNC_ARGS+=("-passwd" "${NOVNC_PASSWORD}")
+else
+  VNC_ARGS+=("-nopw")
+fi
+
 x11vnc \
   -display "${DISPLAY_NUMBER}" \
   -forever \
   -shared \
-  -nopw \
   -rfbport "${VNC_PORT}" \
-  -listen "${VNC_LISTEN}" >/tmp/x11vnc.log 2>&1 &
+  -listen "${VNC_LISTEN}" \
+  "${VNC_ARGS[@]}" >/tmp/x11vnc.log 2>&1 &
 X11VNC_PID=$!
 
-websockify --web=/usr/share/novnc/ "0.0.0.0:${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
+# websockify with optional VNC password
+WEB_ARGS=()
+if [[ -n "${NOVNC_PASSWORD}" ]]; then
+  WEB_ARGS+=("--vncpasswd" "${NOVNC_PASSWORD}")
+fi
+
+websockify --web=/usr/share/novnc/ "${WEB_ARGS[@]}" "0.0.0.0:${NOVNC_PORT}" "${VNC_LISTEN}:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
 WEBSOCKIFY_PID=$!
 
 

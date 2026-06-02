@@ -3,8 +3,9 @@ services:
     build: .
     image: local-search-mcp:latest
     ports:
-      - "0.0.0.0:${LOCAL_SEARCH_HTTP_HOST_PORT:-8765}:8765"
-      - "127.0.0.1:${LOCAL_SEARCH_NOVNC_HOST_PORT:-6082}:6080"
+       - "0.0.0.0:${LOCAL_SEARCH_HTTP_HOST_PORT:-8765}:8765"
+       # noVNC port — uncomment when manual VNC access is needed (captcha/MFA)
+       # - "127.0.0.1:${LOCAL_SEARCH_NOVNC_HOST_PORT:-6082}:6080"
     environment:
       - PORT=${PORT:-8765}
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
