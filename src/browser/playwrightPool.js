@@ -231,6 +231,7 @@ export class PlaywrightPool {
     this.browser = null;
     this.connectedBrowser = null;
     this.sharedContext = null;
+    this.searchContext = null;
     this.sessionContexts = new Map();
     this.sessionPages = new Map();
     this.hydratedSharedSessions = new Set();
@@ -274,6 +275,7 @@ export class PlaywrightPool {
     }
     this.connectedBrowser = null;
     this.sharedContext = null;
+    this.searchContext = null;
     this.sessionPages.clear();
     this.hydratedSharedSessions.clear();
     this._resetKeptPages();
@@ -395,6 +397,20 @@ export class PlaywrightPool {
     }
     this.sharedContext = await browser.newContext();
     return this.sharedContext;
+  }
+
+  async getSearchContext() {
+    const browser = await this.getBrowser();
+    if (this.searchContext) {
+      try {
+        this.searchContext.pages();
+        return this.searchContext;
+      } catch {
+        this.searchContext = null;
+      }
+    }
+    this.searchContext = await browser.newContext();
+    return this.searchContext;
   }
 
   async hydrateSessionContext(context, sessionKey) {
@@ -523,7 +539,7 @@ export class PlaywrightPool {
     if (sessionKey && reuseSession) {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
     } else if (isCdpMode) {
-      context = await this.getSharedContext();
+      context = await this.getSearchContext();
     } else {
       context = await this.createEphemeralContext({ proxyProfile, url, sessionKey });
       ownsContext = true;
@@ -550,10 +566,6 @@ export class PlaywrightPool {
           this._keptPages.set(sessionKey || `_ephemeral_${Date.now()}`, { page, context, ownsContext, createdAt: Date.now() });
           if (this._keptPages.size > 3) this._cleanupKeptPages();
         }
-      } else if (isCdpMode) {
-        // Don't close pages on shared (default) context — Chromium creates
-        // about:blank replacements. Navigate away instead.
-        try { await page.goto('about:blank', { timeout: 3000 }); } catch {}
       } else {
         await page.close().catch(() => {});
         if (ownsContext) {
@@ -586,11 +598,7 @@ export class PlaywrightPool {
           const oldestKey = this.sessionPages.keys().next().value;
           if (oldestKey) {
             const oldEntry = this.sessionPages.get(oldestKey);
-            if (this.connectedBrowser) {
-              oldEntry.page.goto('about:blank', { timeout: 3000 }).catch(() => {});
-            } else {
-              oldEntry.page.close().catch(() => {});
-            }
+            oldEntry.page.close().catch(() => {});
             this.sessionPages.delete(oldestKey);
           }
         }
@@ -641,11 +649,7 @@ export class PlaywrightPool {
       if (now - entry.lastAccessedAt > SESSION_PAGE_TTL_MS || entry.page.isClosed()) {
         this.sessionPages.delete(key);
         if (!entry.page.isClosed()) {
-          if (this.connectedBrowser) {
-            promises.push(entry.page.goto('about:blank', { timeout: 3000 }).catch(() => {}));
-          } else {
-            promises.push(entry.page.close().catch(() => {}));
-          }
+          promises.push(entry.page.close().catch(() => {}));
         }
       }
     }
@@ -688,19 +692,20 @@ export class PlaywrightPool {
       await context.close().catch(() => {});
     }
     this.sessionContexts.clear();
+    if (this.searchContext) {
+      const pages = this.searchContext.pages().filter(p => !p.isClosed());
+      for (const page of pages) {
+        await page.close().catch(() => {});
+      }
+      await this.searchContext.close().catch(() => {});
+      this.searchContext = null;
+    }
     if (this.sharedContext) {
-      if (this.connectedBrowser) {
-        // CDP mode: sharedContext is the visible browser's default context
-        // Navigate ephemeral pages to about:blank, don't close (Chromium replaces)
-        const pages = this.sharedContext.pages().filter(p => !p.isClosed());
-        for (const page of pages) {
-          try { await page.goto('about:blank', { timeout: 3000 }); } catch {}
-        }
-      } else {
-        const pages = this.sharedContext.pages().filter(p => !p.isClosed());
-        for (const page of pages) {
-          await page.close().catch(() => {});
-        }
+      const pages = this.sharedContext.pages().filter(p => !p.isClosed());
+      for (const page of pages) {
+        await page.close().catch(() => {});
+      }
+      if (!this.connectedBrowser) {
         await this.sharedContext.close().catch(() => {});
       }
     }
