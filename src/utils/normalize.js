@@ -105,8 +105,11 @@ function getBlockedDomains() {
     const configPath = process.env.BLOCKED_DOMAINS_FILE || '/app/config/blocked_domains.json';
     if (fs.existsSync(configPath)) {
       const raw = fs.readFileSync(configPath, 'utf8');
-      blockedDomains = JSON.parse(raw).map(d => d.toLowerCase());
-      return blockedDomains;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        blockedDomains = parsed.filter(d => typeof d === 'string').map(d => d.toLowerCase());
+        return blockedDomains;
+      }
     }
   } catch {}
   blockedDomains = DEFAULT_BLOCKED_DOMAINS;
@@ -117,6 +120,6 @@ export function filterBlockedDomains(items) {
   const domains = getBlockedDomains();
   return items.filter(item => {
     const host = hostOf(item.url || '');
-    return !domains.some(d => host.includes(d));
+    return !domains.some(d => host === d || host.endsWith('.' + d));
   });
 }

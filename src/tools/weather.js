@@ -79,26 +79,37 @@ async function geocode(location) {
 }
 
 async function fetchGeo(name, lang) {
-  const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(name)}&count=10&language=${lang}&format=json`);
-  return await res.json();
+  try {
+    const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(name)}&count=10&language=${lang}&format=json`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 async function fetchWeather(lat, lon) {
-  const params = new URLSearchParams({
-    latitude: lat,
-    longitude: lon,
-    current: 'temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,pressure_msl,is_day',
-    daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum',
-    timezone: 'auto',
-    forecast_days: '7'
-  });
-  const res = await fetch(`${FORECAST_URL}?${params}`);
-  const data = await res.json();
-  if (data.error) return { error: data.reason || data.error };
-  return data;
+  try {
+    const params = new URLSearchParams({
+      latitude: lat,
+      longitude: lon,
+      current: 'temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,pressure_msl,is_day',
+      daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum',
+      timezone: 'auto',
+      forecast_days: '7'
+    });
+    const res = await fetch(`${FORECAST_URL}?${params}`);
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    const data = await res.json();
+    if (data.error) return { error: data.reason || data.error };
+    return data;
+  } catch {
+    return { error: '网络请求失败' };
+  }
 }
 
 function formatWeather(loc, data) {
+  if (!data.current) return '天气数据为空';
   const c = data.current;
   const lines = [];
   lines.push(`🌤 天气预报`);
@@ -158,20 +169,23 @@ function formatLocationOptions(results) {
 
 export async function searchWeather(query) {
   if (!query) return { error: '请输入城市名称，例如："北京" 或 "Tokyo"' };
+  try {
+    const results = await geocode(query);
+    if (!results) {
+      return { error: `找不到位置: ${query}` };
+    }
 
-  const results = await geocode(query);
-  if (!results) {
-    return { error: `找不到位置: ${query}` };
+    if (results.length > 1) {
+      return { content: formatLocationOptions(results), type: 'location_options', locations: results.slice(0, 5) };
+    }
+
+    const r = results[0];
+    const loc = { name: r.name, country: r.country, admin1: r.admin1 || '', latitude: r.latitude, longitude: r.longitude };
+    const data = await fetchWeather(loc.latitude, loc.longitude);
+    if (data.error) return { error: `天气数据获取失败: ${data.error}` };
+
+    return { title: `${loc.name} 天气`, content: formatWeather(loc, data), location: loc, source: 'open-meteo.com' };
+  } catch (err) {
+    return { error: `天气查询失败: ${err.message}` };
   }
-
-  if (results.length > 1) {
-    return { content: formatLocationOptions(results), type: 'location_options', locations: results.slice(0, 5) };
-  }
-
-  const r = results[0];
-  const loc = { name: r.name, country: r.country, admin1: r.admin1 || '', latitude: r.latitude, longitude: r.longitude };
-  const data = await fetchWeather(loc.latitude, loc.longitude);
-  if (data.error) return { error: `天气数据获取失败: ${data.error}` };
-
-  return { title: `${loc.name} 天气`, content: formatWeather(loc, data), location: loc, source: 'open-meteo.com' };
 }

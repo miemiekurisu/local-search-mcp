@@ -15,7 +15,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
         prompts: {}
       },
       instructions: [
-        'This server provides 7 tools for web search, weather, and evidence gathering.',
+        'This server provides 8 tools for web search, weather, time, and evidence gathering.',
         '',
         'Quick start:',
         '  - Use search_web to search DuckDuckGo + Wikipedia via HTTP (no login, no browser needed).',

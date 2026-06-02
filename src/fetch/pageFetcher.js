@@ -96,8 +96,8 @@ export class PageFetcher {
       const title = await page.title().catch(() => '');
       text = normalizeWhitespace(text);
       if (!text || text.length < 80) {
-        const isCaptcha = text.length > 0 && (text.includes('captcha') || text.includes('verify') || text.includes('security') || text.includes('blocked') || text.includes('automated') || text.length < 50);
-        if (isCaptcha || text.length < 20) {
+        const hasCaptchaKeywords = text.length > 0 && (text.includes('captcha') || text.includes('verify') || text.includes('blocked') || text.includes('automated'));
+        if (hasCaptchaKeywords || text.length < 20) {
           return {
             status: 'captcha', url, title: normalizeWhitespace(title),
             text_preview: '', text_chars: 0, artifact_ref: null,

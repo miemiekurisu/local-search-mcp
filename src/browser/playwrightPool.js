@@ -563,7 +563,13 @@ export class PlaywrightPool {
       }
       if (keepPageOpen) {
         if (isCdpMode || ownsContext) {
-          this._keptPages.set(sessionKey || `_ephemeral_${Date.now()}`, { page, context, ownsContext, createdAt: Date.now() });
+          const key = sessionKey || `_ephemeral_${Date.now()}`;
+          const existing = this._keptPages.get(key);
+          if (existing) {
+            existing.page.close().catch(() => {});
+            if (existing.ownsContext) existing.context.close().catch(() => {});
+          }
+          this._keptPages.set(key, { page, context, ownsContext, createdAt: Date.now() });
           if (this._keptPages.size > 3) this._cleanupKeptPages();
         }
       } else {
@@ -594,24 +600,24 @@ export class PlaywrightPool {
   let pageEntry = this.sessionPages.get(sessionKey);
     let page;
     if (!pageEntry || pageEntry.page.isClosed()) {
-        if (this.sessionPages.size >= MAX_SESSION_CONTEXTS) {
-          const oldestKey = this.sessionPages.keys().next().value;
-          if (oldestKey) {
-            const oldEntry = this.sessionPages.get(oldestKey);
-            oldEntry.page.close().catch(() => {});
-            this.sessionPages.delete(oldestKey);
-          }
+      if (this.sessionPages.size >= MAX_SESSION_CONTEXTS) {
+        const oldestKey = this.sessionPages.keys().next().value;
+        if (oldestKey) {
+          const oldEntry = this.sessionPages.get(oldestKey);
+          oldEntry.page.close().catch(() => {});
+          this.sessionPages.delete(oldestKey);
         }
-        page = await context.newPage();
-        page.setDefaultTimeout(CONFIG.browserTimeoutMs);
-        await stealthPlugin(page);
-        await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort());
-        pageEntry = { page, lastAccessedAt: Date.now() };
-        this.sessionPages.set(sessionKey, pageEntry);
-      } else {
-        page = pageEntry.page;
-        pageEntry.lastAccessedAt = Date.now();
       }
+      page = await context.newPage();
+      page.setDefaultTimeout(CONFIG.browserTimeoutMs);
+      await stealthPlugin(page);
+      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort());
+      pageEntry = { page, lastAccessedAt: Date.now() };
+      this.sessionPages.set(sessionKey, pageEntry);
+    } else {
+      page = pageEntry.page;
+      pageEntry.lastAccessedAt = Date.now();
+    }
     if (url) {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: CONFIG.browserTimeoutMs });
     }

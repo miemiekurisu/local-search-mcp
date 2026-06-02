@@ -1,7 +1,7 @@
 const TIMEZONE = process.env.TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 function isUtcQuery(q) {
-  return /^utc|epoch|unix|timestamp|unixtime/i.test(q);
+  return /^(utc|epoch|unix|timestamp|unixtime)/i.test(q);
 }
 
 export function getCurrentTime(query) {
@@ -15,8 +15,6 @@ export function getCurrentTime(query) {
 
     if (isUtcQuery(q)) {
       tz = 'UTC';
-    } else if (/en/i.test(q) || /^en\b/i.test(q)) {
-      lang = 'en-US';
     } else if (/[\u4e00-\u9fff]/.test(query)) {
       lang = 'zh-CN';
     } else if (/[\u3040-\u309f\u30a0-\u30ff]/.test(query)) {
@@ -37,9 +35,7 @@ export function getCurrentTime(query) {
       tz = 'Europe/Moscow';
     } else if (/in|india|mumbai|delhi/i.test(q)) {
       tz = 'Asia/Kolkata';
-    }
-
-    if (/en/i.test(q) && !/[\u4e00-\u9fff]/.test(query)) {
+    } else if (/^en\b/i.test(q) || /^english/i.test(q)) {
       lang = 'en-US';
     }
   }
