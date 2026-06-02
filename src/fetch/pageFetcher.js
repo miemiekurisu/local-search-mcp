@@ -71,8 +71,10 @@ export class PageFetcher {
     try {
       const u = new URL(url);
       if (!['http:', 'https:'].includes(u.protocol)) return false;
-      const h = u.hostname;
+      let h = u.hostname;
       if (!h) return false;
+      // Strip square brackets from IPv6 hostnames (e.g. "[::1]" -> "::1")
+      if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
       if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return false;
       if (h.startsWith('192.168.')) return false;
       if (h.startsWith('10.')) return false;
@@ -80,6 +82,8 @@ export class PageFetcher {
           h.startsWith('172.19.') || h.startsWith('172.2') || h.startsWith('172.30') || h.startsWith('172.31')) return false;
       if (h === '169.254.169.254') return false;
       if (h === '0.0.0.0') return false;
+      if (h.startsWith('fc') || h.startsWith('fd')) return false; // IPv6 Unique Local Address (fc00::/7)
+      if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return false; // IPv6 Link-Local (fe80::/10)
       if (h.endsWith('.internal') || h.endsWith('.local')) return false;
       if (h === 'host.docker.internal') return false;
       return true;

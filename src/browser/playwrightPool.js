@@ -597,7 +597,7 @@ export class PlaywrightPool {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
     }
 
-  let pageEntry = this.sessionPages.get(sessionKey);
+    let pageEntry = this.sessionPages.get(sessionKey);
     let page;
     if (!pageEntry || pageEntry.page.isClosed()) {
       if (this.sessionPages.size >= MAX_SESSION_CONTEXTS) {

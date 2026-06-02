@@ -58,5 +58,5 @@ function parseChromeSearchResults(output, limit) {
 }
 
 export async function searchGoogleViaChrome(query, opts = {}) {
-  return searchViaChromeDevTools(query, { ...opts, engine: 'google' });
+  return searchViaChromeDevTools(query, opts);
 }

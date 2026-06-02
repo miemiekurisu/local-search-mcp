@@ -72,7 +72,7 @@ export class SearchKernel {
           const msg = row.error?.message || 'fetch failed';
           fetchFailures.push({ url: row.result.url, engine: row.result.engine, code, message: msg });
         } else if (row.page.status === 'success') {
-          const text = String(row.page.text_preview || '').replace(/<[^>]*>/g, '');
+          const text = String(row.page.text_preview || '');
           items.push({
             title: row.result.title,
             url: row.result.url,

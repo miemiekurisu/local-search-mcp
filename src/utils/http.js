@@ -48,7 +48,7 @@ export function createHeaders(extra = {}, forGoogle = false) {
     base['sec-fetch-dest'] = 'document';
     base['sec-fetch-mode'] = 'navigate';
     base['sec-fetch-site'] = 'none';
-    base['sec-fetch-user-mode'] = '?1';
+    base['sec-fetch-user'] = '?1';
     base['upgrade-insecure-requests'] = '1';
   }
   return { ...DEFAULT_HEADERS, ...base };
@@ -61,6 +61,8 @@ export const DEFAULT_HEADERS = {
 
 function isInternalHost(hostname) {
   if (!hostname) return true;
+  // Strip square brackets from IPv6 hostnames (e.g. "[::1]" -> "::1")
+  if (hostname.startsWith('[') && hostname.endsWith(']')) hostname = hostname.slice(1, -1);
   if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
   if (hostname.startsWith('192.168.')) return true;
   if (hostname.startsWith('10.')) return true;
@@ -68,6 +70,8 @@ function isInternalHost(hostname) {
       hostname.startsWith('172.19.') || hostname.startsWith('172.2') || hostname.startsWith('172.30') || hostname.startsWith('172.31')) return true;
   if (hostname === '169.254.169.254') return true;
   if (hostname === '0.0.0.0') return true;
+  if (hostname.startsWith('fc') || hostname.startsWith('fd')) return true; // IPv6 Unique Local Address (fc00::/7)
+  if (hostname.startsWith('fe8') || hostname.startsWith('fe9') || hostname.startsWith('fea') || hostname.startsWith('feb')) return true; // IPv6 Link-Local (fe80::/10)
   if (hostname.endsWith('.internal') || hostname.endsWith('.local')) return true;
   if (hostname === 'host.docker.internal') return true;
   return false;
