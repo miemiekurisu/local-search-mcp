@@ -61,7 +61,7 @@ x11vnc \
   -listen "${VNC_LISTEN}" >/tmp/x11vnc.log 2>&1 &
 X11VNC_PID=$!
 
-websockify --web=/usr/share/novnc/ "${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
+websockify --web=/usr/share/novnc/ --listen="${NOVNC_LISTEN}" "${NOVNC_PORT}" "127.0.0.1:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
 WEBSOCKIFY_PID=$!
 
 
