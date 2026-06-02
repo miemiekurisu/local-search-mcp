@@ -550,6 +550,10 @@ export class PlaywrightPool {
           this._keptPages.set(sessionKey || `_ephemeral_${Date.now()}`, { page, context, ownsContext, createdAt: Date.now() });
           if (this._keptPages.size > 3) this._cleanupKeptPages();
         }
+      } else if (isCdpMode) {
+        // Don't close pages on shared (default) context — Chromium creates
+        // about:blank replacements. Navigate away instead.
+        try { await page.goto('about:blank', { timeout: 3000 }); } catch {}
       } else {
         await page.close().catch(() => {});
         if (ownsContext) {
@@ -582,7 +586,11 @@ export class PlaywrightPool {
           const oldestKey = this.sessionPages.keys().next().value;
           if (oldestKey) {
             const oldEntry = this.sessionPages.get(oldestKey);
-            oldEntry.page.close().catch(() => {});
+            if (this.connectedBrowser) {
+              oldEntry.page.goto('about:blank', { timeout: 3000 }).catch(() => {});
+            } else {
+              oldEntry.page.close().catch(() => {});
+            }
             this.sessionPages.delete(oldestKey);
           }
         }
@@ -633,7 +641,11 @@ export class PlaywrightPool {
       if (now - entry.lastAccessedAt > SESSION_PAGE_TTL_MS || entry.page.isClosed()) {
         this.sessionPages.delete(key);
         if (!entry.page.isClosed()) {
-          promises.push(entry.page.close().catch(() => {}));
+          if (this.connectedBrowser) {
+            promises.push(entry.page.goto('about:blank', { timeout: 3000 }).catch(() => {}));
+          } else {
+            promises.push(entry.page.close().catch(() => {}));
+          }
         }
       }
     }
@@ -677,11 +689,18 @@ export class PlaywrightPool {
     }
     this.sessionContexts.clear();
     if (this.sharedContext) {
-      const pages = this.sharedContext.pages().filter(p => !p.isClosed());
-      for (const page of pages) {
-        await page.close().catch(() => {});
-      }
-      if (!this.connectedBrowser) {
+      if (this.connectedBrowser) {
+        // CDP mode: sharedContext is the visible browser's default context
+        // Navigate ephemeral pages to about:blank, don't close (Chromium replaces)
+        const pages = this.sharedContext.pages().filter(p => !p.isClosed());
+        for (const page of pages) {
+          try { await page.goto('about:blank', { timeout: 3000 }); } catch {}
+        }
+      } else {
+        const pages = this.sharedContext.pages().filter(p => !p.isClosed());
+        for (const page of pages) {
+          await page.close().catch(() => {});
+        }
         await this.sharedContext.close().catch(() => {});
       }
     }
