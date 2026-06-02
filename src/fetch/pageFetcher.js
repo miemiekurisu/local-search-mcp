@@ -12,6 +12,14 @@ export class PageFetcher {
 
   async fetchPage(url, opts = {}) {
     url = this.normalizeUrl(url);
+    if (!this.validateUrl(url)) {
+      return {
+        status: 'failed', url, title: '', text_preview: '', text_chars: 0,
+        artifact_ref: null, fetch_mode: opts.mode || 'auto',
+        failure_code: 'BLOCKED_URL',
+        failure_reason: 'URL scheme or host is blocked (SSRF protection)'
+      };
+    }
     const mode = opts.mode || 'auto';
     const maxChars = Number(opts.max_chars || opts.maxChars || 12000);
     const proxyProfile = opts.proxy_profile || opts.proxyProfile || 'auto';
@@ -56,6 +64,27 @@ export class PageFetcher {
       return u.toString();
     } catch {
       return url;
+    }
+  }
+
+  validateUrl(url) {
+    try {
+      const u = new URL(url);
+      if (!['http:', 'https:'].includes(u.protocol)) return false;
+      const h = u.hostname;
+      if (!h) return false;
+      if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return false;
+      if (h.startsWith('192.168.')) return false;
+      if (h.startsWith('10.')) return false;
+      if (h.startsWith('172.16.') || h.startsWith('172.17.') || h.startsWith('172.18.') ||
+          h.startsWith('172.19.') || h.startsWith('172.2') || h.startsWith('172.30') || h.startsWith('172.31')) return false;
+      if (h === '169.254.169.254') return false;
+      if (h === '0.0.0.0') return false;
+      if (h.endsWith('.internal') || h.endsWith('.local')) return false;
+      if (h === 'host.docker.internal') return false;
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -9,10 +9,11 @@ const execAsync = promisify(exec);
 const CHROME_DEBUG_URL = process.env.CHROME_DEBUG_URL || 'http://host.docker.internal:9222';
 
 export async function searchViaChromeDevTools(query, opts = {}) {
-  const limit = opts.limit || 10;
+  const limit = Math.max(1, Math.min(20, Number(opts.limit || 10)));
   
   try {
-    const npxCmd = `npx -y chrome-devtools-mcp@latest search --query "${query}" --limit ${limit} --browser-url ${CHROME_DEBUG_URL}`;
+    const safeQuery = query.replace(/[&|;`$(){}<>!#]/g, '');
+    const npxCmd = `npx -y chrome-devtools-mcp@latest search --query "${safeQuery}" --limit ${limit} --browser-url ${CHROME_DEBUG_URL}`;
     const { stdout, stderr } = await execAsync(npxCmd, { timeout: 30000 });
     
     if (stderr && !stderr.includes('deprecated')) {

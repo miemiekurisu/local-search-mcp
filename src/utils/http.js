@@ -59,16 +59,31 @@ export const DEFAULT_HEADERS = {
   'accept-language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7'
 };
 
+function isInternalHost(hostname) {
+  if (!hostname) return true;
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+  if (hostname.startsWith('192.168.')) return true;
+  if (hostname.startsWith('10.')) return true;
+  if (hostname.startsWith('172.16.') || hostname.startsWith('172.17.') || hostname.startsWith('172.18.') ||
+      hostname.startsWith('172.19.') || hostname.startsWith('172.2') || hostname.startsWith('172.30') || hostname.startsWith('172.31')) return true;
+  if (hostname === '169.254.169.254') return true;
+  if (hostname === '0.0.0.0') return true;
+  if (hostname.endsWith('.internal') || hostname.endsWith('.local')) return true;
+  if (hostname === 'host.docker.internal') return true;
+  return false;
+}
+
 export async function fetchWithTimeout(url, opts = {}) {
   const { timeoutMs = 15000, proxyUrl = null, headers = {}, method = 'GET', body } = opts;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    let currentUrl = url;
     const init = {
       method,
       headers: createHeaders(headers),
       signal: controller.signal,
-      redirect: 'follow'
+      redirect: 'manual'
     };
     if (body !== undefined && body !== null) {
       init.body = body;
@@ -79,7 +94,24 @@ export async function fetchWithTimeout(url, opts = {}) {
     if (proxyUrl && /^https?:\/\//i.test(proxyUrl)) {
       init.dispatcher = new ProxyAgent(proxyUrl);
     }
-    return await fetch(url, init);
+    let resp = await fetch(currentUrl, init);
+    while (resp.status === 301 || resp.status === 302 || resp.status === 303 || resp.status === 307 || resp.status === 308) {
+      const location = resp.headers.get('location');
+      if (!location) break;
+      try {
+        const nextUrl = new URL(location, currentUrl);
+        if (isInternalHost(nextUrl.hostname)) {
+          const err = new Error(`Redirect to internal address blocked: ${nextUrl.hostname}`);
+          err.code = 'SSRF_REDIRECT_BLOCKED';
+          throw err;
+        }
+        currentUrl = nextUrl.toString();
+        resp = await fetch(currentUrl, { ...init, method: 'GET', body: undefined });
+      } catch {
+        throw new Error(`Invalid redirect location: ${location}`);
+      }
+    }
+    return resp;
   } finally {
     clearTimeout(timer);
   }
