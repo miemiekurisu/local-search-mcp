@@ -52,31 +52,30 @@ sleep 1
 openbox >/tmp/openbox.log 2>&1 &
 OPENBOX_PID=$!
 
-# VNC password
-VNC_ARGS=()
+# VNC password — required to enable noVNC access
+# If NOVNC_PASSWORD is not set, noVNC (websockify) will NOT be started
+# This is a security measure: noVNC exposes the full browser session
 if [[ -n "${NOVNC_PASSWORD}" ]]; then
-  VNC_ARGS+=("-passwd" "${NOVNC_PASSWORD}")
+  x11vnc \
+    -display "${DISPLAY_NUMBER}" \
+    -forever \
+    -shared \
+    -passwd "${NOVNC_PASSWORD}" \
+    -rfbport "${VNC_PORT}" \
+    -listen "0.0.0.0" >/tmp/x11vnc.log 2>&1 &
+  X11VNC_PID=$!
+
+  websockify --web=/usr/share/novnc/ \
+    --vncpasswd "${NOVNC_PASSWORD}" \
+    "0.0.0.0:${NOVNC_PORT}" "0.0.0.0:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
+  WEBSOCKIFY_PID=$!
+
+  echo "[start] noVNC enabled with password protection on :${NOVNC_PORT}"
 else
-  VNC_ARGS+=("-nopw")
+  echo "[start] noVNC DISABLED (set NOVNC_PASSWORD env var to enable)"
+  X11VNC_PID=""
+  WEBSOCKIFY_PID=""
 fi
-
-x11vnc \
-  -display "${DISPLAY_NUMBER}" \
-  -forever \
-  -shared \
-  -rfbport "${VNC_PORT}" \
-  -listen "${VNC_LISTEN}" \
-  "${VNC_ARGS[@]}" >/tmp/x11vnc.log 2>&1 &
-X11VNC_PID=$!
-
-# websockify with optional VNC password
-WEB_ARGS=()
-if [[ -n "${NOVNC_PASSWORD}" ]]; then
-  WEB_ARGS+=("--vncpasswd" "${NOVNC_PASSWORD}")
-fi
-
-websockify --web=/usr/share/novnc/ "${WEB_ARGS[@]}" "0.0.0.0:${NOVNC_PORT}" "${VNC_LISTEN}:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
-WEBSOCKIFY_PID=$!
 
 
 find_playwright_chromium() {

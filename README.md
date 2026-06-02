@@ -48,8 +48,8 @@
 **容器进程架构**（`start.sh` 管理）：
 - Xvfb 虚拟显示（`-screen 0 1920x1080x24`），崩溃自动重启
 - Openbox 窗口管理器，崩溃自动重启
-- x11vnc VNC 服务器（仅 127.0.0.1:5900）
-- noVNC websockify（仅 127.0.0.1:6080 → 暴露为宿主 6082）
+- x11vnc VNC 服务器（密码保护，`NOVNC_PASSWORD`）
+- noVNC websockify（默认不暴露，手动解开 `docker-compose.yml` 端口映射 + 设密码）
 - Chromium 监督器：启动 Chromium → 崩溃自动重启 → 循环
 - Node.js HTTP 服务器：崩溃则停止容器，由 Docker `restart` 策略拉起
 
@@ -70,13 +70,26 @@ curl http://localhost:8765/health
 # 返回: {"status":"ok"}
 ```
 
-### 2.2 可视化浏览器模式（默认）
+### 2.2 noVNC 可视化浏览器
 
-`docker-compose.yml` 已配置 `SEARCH_HEADLESS=false` + `USE_EXISTING_CHROME=true`。启动后可通过 noVNC 操作容器内 Chromium：
+`docker-compose.yml` 已配置 `SEARCH_HEADLESS=false` + `USE_EXISTING_CHROME=true`。
 
-```bash
-docker compose up --build -d
+**⚠️ 安全警告：noVNC 默认关闭，必须设置 `NOVNC_PASSWORD` 环境变量才会启动。**
+noVNC 暴露完整的浏览器会话（含登录态、Cookie、页面内容），**不要在生产环境或公网环境开启**。仅在遇到验证码/MFA 需要手动登录时临时启用，用完立即关闭。
+
+启用方法：在 `.env` 文件中设置密码：
 ```
+NOVNC_PASSWORD=your_secure_password
+```
+
+然后重启：
+```bash
+docker compose up -d
+```
+
+访问 `http://<宿主机IP>:6082/vnc.html`，输入密码登录。
+
+关闭 noVNC：从 `.env` 删除或注释掉 `NOVNC_PASSWORD` 行，重启即可。
 
 打开浏览器访问：
 
@@ -373,6 +386,11 @@ environment:
 | `OPENALEX_API_KEY` | `""` | OpenAlex API Key |
 | `CROSSREF_MAILTO` | `""` | Crossref 邮箱 |
 | `UNPAYWALL_EMAIL` | `""` | Unpaywall 邮箱 |
+| `NOVNC_PASSWORD` | `""`（默认关闭） | noVNC 密码，**必须设置才会启动 noVNC** |
+| `HTTP_LISTEN_HOST` | `0.0.0.0` | HTTP 服务监听地址 |
+| `HTTP_LISTEN_PORT` | `8765` | HTTP 服务宿主端口 |
+| `NOVNC_LISTEN_HOST` | `127.0.0.1` | noVNC 宿主监听地址（`0.0.0.0` 允许局域网访问） |
+| `NOVNC_LISTEN_PORT` | `6082` | noVNC 宿主端口 |
 
 ### 6.2 自定义搜索引擎
 

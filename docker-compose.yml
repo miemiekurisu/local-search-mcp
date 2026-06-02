@@ -3,70 +3,64 @@ services:
     build: .
     image: local-search-mcp:latest
     ports:
-       - "0.0.0.0:${LOCAL_SEARCH_HTTP_HOST_PORT:-8765}:8765"
-       # noVNC port — uncomment when manual VNC access is needed (captcha/MFA)
-       # - "127.0.0.1:${LOCAL_SEARCH_NOVNC_HOST_PORT:-6082}:6080"
+       - "${HTTP_LISTEN_HOST:-0.0.0.0}:${HTTP_LISTEN_PORT:-8765}:8765"
+       - "${NOVNC_LISTEN_HOST:-127.0.0.1}:${NOVNC_LISTEN_PORT:-6082}:6080"
     environment:
-      - PORT=${PORT:-8765}
-      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-      - DEFAULT_SEARCH_LIMIT=10
-      - MAX_FETCH_CONCURRENCY=3
-      - SEARCH_HEADLESS=false
-      - BROWSER_STATE_DIR=/data/browser-state
-      - USE_EXISTING_CHROME=true
-      - CDP_URL=${CDP_URL:-http://127.0.0.1:9224}
-      - CHROME_DEVTOOLS_MCP_BROWSER_URL=${CHROME_DEVTOOLS_MCP_BROWSER_URL:-http://127.0.0.1:9224}
-      - VISIBLE_BROWSER_CDP_PORT=${VISIBLE_BROWSER_CDP_PORT:-9224}
-      - VISIBLE_BROWSER_PROFILE_DIR=${VISIBLE_BROWSER_PROFILE_DIR:-/data/browser-profile}
-      - VISIBLE_BROWSER_START_URL=${VISIBLE_BROWSER_START_URL:-about:blank}
-      - VISIBLE_BROWSER_PROXY_SERVER=${VISIBLE_BROWSER_PROXY_SERVER:-}
-      - HTTP_PROXY=${HTTP_PROXY:-}
-      - HTTPS_PROXY=${HTTPS_PROXY:-}
-      - http_proxy=${http_proxy:-}
-      - https_proxy=${https_proxy:-}
-      - NO_PROXY=${NO_PROXY:-}
-      - no_proxy=${no_proxy:-}
-      - LAN_PROXY_SERVER=${LAN_PROXY_SERVER:-}
-      - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
-      - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}
-      - ENABLE_PAPER_TOOLS=${ENABLE_PAPER_TOOLS:-true}
-      - OPENALEX_API_KEY=${OPENALEX_API_KEY:-}
-      - CROSSREF_MAILTO=${CROSSREF_MAILTO:-}
-      - UNPAYWALL_EMAIL=${UNPAYWALL_EMAIL:-}
+       - PORT=${PORT:-8765}
+       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+       - DEFAULT_SEARCH_LIMIT=10
+       - MAX_FETCH_CONCURRENCY=3
+       - SEARCH_HEADLESS=false
+       - BROWSER_STATE_DIR=/data/browser-state
+       - USE_EXISTING_CHROME=true
+       - CDP_URL=${CDP_URL:-http://127.0.0.1:9224}
+       - CHROME_DEVTOOLS_MCP_BROWSER_URL=${CHROME_DEVTOOLS_MCP_BROWSER_URL:-http://127.0.0.1:9224}
+       - VISIBLE_BROWSER_CDP_PORT=${VISIBLE_BROWSER_CDP_PORT:-9224}
+       - VISIBLE_BROWSER_PROFILE_DIR=${VISIBLE_BROWSER_PROFILE_DIR:-/data/browser-profile}
+       - VISIBLE_BROWSER_START_URL=${VISIBLE_BROWSER_START_URL:-about:blank}
+       - VISIBLE_BROWSER_PROXY_SERVER=${VISIBLE_BROWSER_PROXY_SERVER:-}
+       - HTTP_PROXY=${HTTP_PROXY:-}
+       - HTTPS_PROXY=${HTTPS_PROXY:-}
+       - http_proxy=${http_proxy:-}
+       - https_proxy=${https_proxy:-}
+       - NO_PROXY=${NO_PROXY:-}
+       - no_proxy=${no_proxy:-}
+       - LAN_PROXY_SERVER=${LAN_PROXY_SERVER:-}
+       - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
+       - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}
+       - ENABLE_PAPER_TOOLS=${ENABLE_PAPER_TOOLS:-true}
+       - OPENALEX_API_KEY=${OPENALEX_API_KEY:-}
+       - CROSSREF_MAILTO=${CROSSREF_MAILTO:-}
+       - UNPAYWALL_EMAIL=${UNPAYWALL_EMAIL:-}
+       - NOVNC_PASSWORD=${NOVNC_PASSWORD:-}
 
-      # Paper content cache
-      - PAPER_CACHE_ENABLED=${PAPER_CACHE_ENABLED:-true}
-      - PAPER_CACHE_DIR=/data/cache/papers
-      - PAPER_CACHE_MANIFEST=/data/cache/papers/manifest.sqlite
-      - PAPER_CACHE_RAW_DIR=/data/cache/papers/raw
-      - PAPER_CACHE_TEXT_DIR=/data/cache/papers/text
-      - PAPER_CACHE_SECTION_DIR=/data/cache/papers/sections
-      - PAPER_CACHE_CHUNK_DIR=/data/cache/papers/chunks
-      - PAPER_CACHE_TMP_DIR=/data/cache/papers/tmp
-      - PAPER_CACHE_MAX_BYTES=${PAPER_CACHE_MAX_BYTES:-10737418240}
-      - PAPER_CACHE_RAW_MAX_BYTES=${PAPER_CACHE_RAW_MAX_BYTES:-4294967296}
-      - PAPER_CACHE_RAW_TTL_DAYS=${PAPER_CACHE_RAW_TTL_DAYS:-7}
-      - PAPER_CACHE_TEXT_TTL_DAYS=${PAPER_CACHE_TEXT_TTL_DAYS:-90}
-      - PAPER_CACHE_BUNDLE_TTL_DAYS=${PAPER_CACHE_BUNDLE_TTL_DAYS:-30}
-      - PAPER_FETCH_MAX_BYTES=${PAPER_FETCH_MAX_BYTES:-52428800}
-      - PAPER_FETCH_MAX_FULLTEXT_PAPERS=${PAPER_FETCH_MAX_FULLTEXT_PAPERS:-5}
-      - PAPER_FETCH_PRESERVE_RAW=${PAPER_FETCH_PRESERVE_RAW:-false}
-
-      # noVNC / VNC local-only
-      - LOCAL_SEARCH_VNC_LISTEN=127.0.0.1
-      - LOCAL_SEARCH_NOVNC_LISTEN=127.0.0.1
-      - LOCAL_SEARCH_VNC_PORT=5900
-      - LOCAL_SEARCH_NOVNC_PORT=6080
+       # Paper content cache
+       - PAPER_CACHE_ENABLED=${PAPER_CACHE_ENABLED:-true}
+       - PAPER_CACHE_DIR=/data/cache/papers
+       - PAPER_CACHE_MANIFEST=/data/cache/papers/manifest.sqlite
+       - PAPER_CACHE_RAW_DIR=/data/cache/papers/raw
+       - PAPER_CACHE_TEXT_DIR=/data/cache/papers/text
+       - PAPER_CACHE_SECTION_DIR=/data/cache/papers/sections
+       - PAPER_CACHE_CHUNK_DIR=/data/cache/papers/chunks
+       - PAPER_CACHE_TMP_DIR=/data/cache/papers/tmp
+       - PAPER_CACHE_MAX_BYTES=${PAPER_CACHE_MAX_BYTES:-10737418240}
+       - PAPER_CACHE_RAW_MAX_BYTES=${PAPER_CACHE_RAW_MAX_BYTES:-4294967296}
+       - PAPER_CACHE_RAW_TTL_DAYS=${PAPER_CACHE_RAW_TTL_DAYS:-7}
+       - PAPER_CACHE_TEXT_TTL_DAYS=${PAPER_CACHE_TEXT_TTL_DAYS:-90}
+       - PAPER_CACHE_BUNDLE_TTL_DAYS=${PAPER_CACHE_BUNDLE_TTL_DAYS:-30}
+       - PAPER_FETCH_MAX_BYTES=${PAPER_FETCH_MAX_BYTES:-52428800}
+       - PAPER_FETCH_MAX_FULLTEXT_PAPERS=${PAPER_FETCH_MAX_FULLTEXT_PAPERS:-5}
+       - PAPER_FETCH_PRESERVE_RAW=${PAPER_FETCH_PRESERVE_RAW:-false}
     volumes:
-      - ./data:/data
-      - ./src:/app/src
-      - ./config:/app/config
+       - ./data:/data
+       - ./src:/app/src
+       - ./config:/app/config
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+       - "host.docker.internal:host-gateway"
     shm_size: "1gb"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "sh", "-c", "curl -sf http://localhost:${PORT:-8765}/health || curl -sf http://localhost:8765/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+       test: ["CMD", "sh", "-c", "curl -sf http://localhost:8765/health"]
+       interval: 30s
+       timeout: 10s
+       retries: 3
