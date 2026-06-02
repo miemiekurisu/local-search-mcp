@@ -95,21 +95,23 @@ export async function fetchWithTimeout(url, opts = {}) {
       init.dispatcher = new ProxyAgent(proxyUrl);
     }
     let resp = await fetch(currentUrl, init);
+    let redirectCount = 0;
     while (resp.status === 301 || resp.status === 302 || resp.status === 303 || resp.status === 307 || resp.status === 308) {
+      redirectCount++;
+      if (redirectCount > 10) throw new Error(`Too many redirects (${redirectCount})`);
       const location = resp.headers.get('location');
       if (!location) break;
+      let nextUrl;
       try {
-        const nextUrl = new URL(location, currentUrl);
-        if (isInternalHost(nextUrl.hostname)) {
-          const err = new Error(`Redirect to internal address blocked: ${nextUrl.hostname}`);
-          err.code = 'SSRF_REDIRECT_BLOCKED';
-          throw err;
-        }
-        currentUrl = nextUrl.toString();
-        resp = await fetch(currentUrl, { ...init, method: 'GET', body: undefined });
+        nextUrl = new URL(location, currentUrl);
       } catch {
         throw new Error(`Invalid redirect location: ${location}`);
       }
+      if (isInternalHost(nextUrl.hostname)) {
+        throw Object.assign(new Error(`Redirect to internal address blocked: ${nextUrl.hostname}`), { code: 'SSRF_REDIRECT_BLOCKED' });
+      }
+      currentUrl = nextUrl.toString();
+      resp = await fetch(currentUrl, { ...init, method: 'GET', body: undefined });
     }
     return resp;
   } finally {
