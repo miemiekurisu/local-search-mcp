@@ -66,7 +66,6 @@ if [[ -n "${NOVNC_PASSWORD}" ]]; then
   X11VNC_PID=$!
 
   websockify --web=/usr/share/novnc/ \
-    --vncpasswd "${NOVNC_PASSWORD}" \
     "0.0.0.0:${NOVNC_PORT}" "0.0.0.0:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
   WEBSOCKIFY_PID=$!
 
