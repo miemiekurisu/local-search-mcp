@@ -25,7 +25,7 @@ function parseBingHtml(html, limit) {
 }
 
 export async function searchBing(query, opts = {}) {
-  const limit = opts.limit || CONFIG.defaultSearchLimit;
+  const limit = Math.max(1, Math.min(20, Number(opts.limit || CONFIG.defaultSearchLimit)));
   const proxyProfile = opts.proxyProfile || 'auto';
   
   return await opts.browserPool.withPage({

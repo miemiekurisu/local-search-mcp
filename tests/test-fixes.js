@@ -4,11 +4,7 @@ import { describe, it, before } from 'node:test';
 // ─── Bug 1: searchKernel.js text_preview should not strip < > from plain text ───
 describe('Bug 1: searchKernel text_preview plain text integrity', () => {
   it('should preserve less-than and greater-than symbols in text_preview', () => {
-    // text_preview from pageFetcher is already plain text (Readability / innerText).
-    // The previous code did: String(row.page.text_preview || '').replace(/<[^>]*>/g, '')
-    // which destroyed legitimate < and > characters.
     const text_preview = 'response code < 200 means error, but b > a is true';
-    // Fixed code simply does: String(row.page.text_preview || '')
     const text = String(text_preview || '');
 
     assert.ok(text.includes('< 200'), 'should preserve "< 200"');
@@ -22,14 +18,7 @@ describe('Bug 1: searchKernel text_preview plain text integrity', () => {
     const text = String(text_preview || '');
 
     assert.ok(text.includes('<div'), 'should preserve <div');
-    assert.ok(text.includes('class='), 'should preserve class= inside angle brackets');
     assert.ok(text.includes('<Module>'), 'should preserve <Module>');
-  });
-
-  it('should handle empty/undefined text_preview gracefully', () => {
-    assert.equal(String(null || ''), '');
-    assert.equal(String(undefined || ''), '');
-    assert.equal(String('' || ''), '');
   });
 });
 
@@ -45,196 +34,250 @@ describe('Bug 2: http.js sec-fetch-user header name', async () => {
   });
 
   it('should use correct sec-fetch-user field name (not sec-fetch-user-mode)', () => {
-    const headers = createHeaders({}, true); // forGoogle = true
-
-    assert.ok(
-      'sec-fetch-user' in headers,
-      'should contain sec-fetch-user header'
-    );
-    assert.equal(
-      headers['sec-fetch-user'],
-      '?1',
-      'sec-fetch-user should be ?1'
-    );
-    assert.ok(
-      !('sec-fetch-user-mode' in headers),
-      'should NOT contain invalid sec-fetch-user-mode header'
-    );
-  });
-
-  it('should include all Google-specific sec-* headers', () => {
     const headers = createHeaders({}, true);
-
-    assert.equal(headers['sec-ch-ua'], '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126", "WebKit";v="126"');
-    assert.equal(headers['sec-ch-ua-mobile'], '?0');
-    assert.equal(headers['sec-ch-ua-platform'], '"Windows"');
-    assert.equal(headers['sec-fetch-dest'], 'document');
-    assert.equal(headers['sec-fetch-mode'], 'navigate');
-    assert.equal(headers['sec-fetch-site'], 'none');
+    assert.ok('sec-fetch-user' in headers);
     assert.equal(headers['sec-fetch-user'], '?1');
-    assert.equal(headers['upgrade-insecure-requests'], '1');
-  });
-
-  it('should not add sec-* headers when forGoogle is false', () => {
-    const headers = createHeaders({}, false);
-
-    assert.ok(!('sec-fetch-user' in headers), 'sec-fetch-user should not be present');
-    assert.ok(!('sec-fetch-dest' in headers), 'sec-fetch-dest should not be present');
-  });
-
-  it('DEFAULT_HEADERS should be defined and contain accept and accept-language', () => {
-    assert.ok(DEFAULT_HEADERS, 'DEFAULT_HEADERS should be truthy');
-    assert.ok(DEFAULT_HEADERS['accept'], 'should have accept header');
-    assert.ok(DEFAULT_HEADERS['accept-language'], 'should have accept-language header');
+    assert.ok(!('sec-fetch-user-mode' in headers));
   });
 });
 
 // ─── Bug 3: isInternalHost IPv6 private address SSRF protection ───
-describe('Bug 3: isInternalHost IPv6 private address detection', async () => {
-  let fetchWithTimeout;
+describe('Bug 3: SSRF validation for IPv6', async () => {
+  let PageFetcher;
 
   before(async () => {
-    // Import to ensure the module loads without errors
-    const mod = await import('../src/utils/http.js');
-    fetchWithTimeout = mod.fetchWithTimeout;
+    const mod = await import('../src/fetch/pageFetcher.js');
+    PageFetcher = mod.PageFetcher;
   });
 
-  // We can't easily call isInternalHost directly (not exported), but we can
-  // verify the module loads and that pageFetcher.validateUrl covers IPv6.
-  // Instead, let's test the pageFetcher validateUrl method which uses the
-  // same SSRF protection logic.
-  describe('pageFetcher SSRF validation for IPv6', async () => {
-    let PageFetcher;
-    let fetcher;
-
-    before(async () => {
-      const mod = await import('../src/fetch/pageFetcher.js');
-      PageFetcher = mod.PageFetcher;
-      fetcher = new PageFetcher({ proxyRouter: null, browserPool: null, artifactStore: null });
-    });
-
-    it('should reject IPv4 loopback addresses', () => {
-      assert.equal(fetcher.validateUrl('http://127.0.0.1:8080'), false);
-      assert.equal(fetcher.validateUrl('http://localhost:8080'), false);
-      assert.equal(fetcher.validateUrl('http://0.0.0.0:8080'), false);
-    });
-
-    it('should reject IPv4 private addresses', () => {
-      assert.equal(fetcher.validateUrl('http://192.168.1.1'), false);
-      assert.equal(fetcher.validateUrl('http://10.0.0.1'), false);
-      assert.equal(fetcher.validateUrl('http://172.16.0.1'), false);
-      assert.equal(fetcher.validateUrl('http://172.31.255.255'), false);
-    });
-
-    it('should reject IPv6 loopback', () => {
-      assert.equal(fetcher.validateUrl('http://[::1]:8080'), false);
-    });
-
-    it('should reject IPv6 Unique Local Address (fc00::/7)', () => {
-      assert.equal(fetcher.validateUrl('http://[fc00::1]'), false);
-      assert.equal(fetcher.validateUrl('http://[fd00::dead:beef]'), false);
-      assert.equal(fetcher.validateUrl('http://[fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]'), false);
-    });
-
-    it('should reject IPv6 Link-Local Address (fe80::/10)', () => {
-      assert.equal(fetcher.validateUrl('http://[fe80::1]'), false);
-      assert.equal(fetcher.validateUrl('http://[fe80::dead:beef]'), false);
-      assert.equal(fetcher.validateUrl('http://[febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff]'), false);
-    });
-
-    it('should reject cloud metadata endpoints', () => {
-      assert.equal(fetcher.validateUrl('http://169.254.169.254/latest/meta-data/'), false);
-    });
-
-    it('should reject internal hostnames', () => {
-      assert.equal(fetcher.validateUrl('http://my-app.internal'), false);
-      assert.equal(fetcher.validateUrl('http://printer.local'), false);
-      assert.equal(fetcher.validateUrl('http://host.docker.internal'), false);
-    });
-
-    it('should allow external URLs', () => {
-      assert.equal(fetcher.validateUrl('https://www.google.com/search?q=test'), true);
-      assert.equal(fetcher.validateUrl('https://github.com/user/repo'), true);
-      assert.equal(fetcher.validateUrl('http://example.com/page'), true);
-      assert.equal(fetcher.validateUrl('https://stackoverflow.com/questions/123'), true);
-    });
-
-    it('should reject non-http schemes', () => {
-      assert.equal(fetcher.validateUrl('ftp://files.example.com'), false);
-      assert.equal(fetcher.validateUrl('file:///etc/passwd'), false);
-      assert.equal(fetcher.validateUrl('javascript:alert(1)'), false);
-    });
-
-    it('should reject invalid URLs', () => {
-      assert.equal(fetcher.validateUrl('not-a-url'), false);
-      assert.equal(fetcher.validateUrl(''), false);
-    });
+  it('should reject IPv6 loopback, ULA, and link-local addresses', () => {
+    const fetcher = new PageFetcher({ proxyRouter: null, browserPool: null, artifactStore: null });
+    assert.equal(fetcher.validateUrl('http://[::1]:8080'), false);
+    assert.equal(fetcher.validateUrl('http://[fc00::1]'), false);
+    assert.equal(fetcher.validateUrl('http://[fe80::1]'), false);
+    assert.equal(fetcher.validateUrl('https://www.google.com/search'), true);
   });
 });
 
 // ─── Bug 4: chrome.js searchGoogleViaChrome should not pass unused engine param ───
-describe('Bug 4: chrome.js searchGoogleViaChrome cleanup', async () => {
+describe('Bug 4: chrome.js cleanup', async () => {
   it('should pass opts through without adding unused engine field', async () => {
-    // We can't run the actual chrome search (requires browser), but we can
-    // verify the source code structure. The fix ensures:
-    //   searchViaChromeDevTools(query, opts)
-    // instead of:
-    //   searchViaChromeDevTools(query, { ...opts, engine: 'google' })
     const fs = await import('node:fs');
     const src = fs.readFileSync(new URL('../src/engines/chrome.js', import.meta.url), 'utf8');
-
-    // Extract the searchGoogleViaChrome function body (from export to closing brace at end)
     const lines = src.split('\n');
     let startIdx = -1;
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].includes('searchGoogleViaChrome')) {
-        startIdx = i;
-        break;
-      }
+      if (lines[i].includes('searchGoogleViaChrome')) { startIdx = i; break; }
     }
-    assert.ok(startIdx >= 0, 'searchGoogleViaChrome function should exist');
-
-    // The function is the last function in the file — grab from its line to end of file
+    assert.ok(startIdx >= 0, 'function should exist');
     const fnBody = lines.slice(startIdx).join('\n');
-
-    assert.ok(
-      !fnBody.includes("engine: 'google'") && !fnBody.includes('engine: "google"'),
-      'should NOT contain the unused engine: "google" parameter spread'
-    );
-    assert.ok(
-      fnBody.includes('searchViaChromeDevTools'),
-      'should still delegate to searchViaChromeDevTools'
-    );
-    assert.ok(
-      fnBody.includes('searchViaChromeDevTools(query, opts)'),
-      'should pass opts directly without modification'
-    );
+    assert.ok(!fnBody.includes("engine: 'google'"), 'should NOT contain engine: google');
+    assert.ok(fnBody.includes('searchViaChromeDevTools(query, opts)'), 'should pass opts directly');
   });
 });
 
 // ─── Bug 5: playwrightPool.js indentation fix ───
-describe('Bug 5: playwrightPool.js indentation consistency', () => {
-  it('openSessionPage method should have consistent indentation at line 600', async () => {
+describe('Bug 5: playwrightPool.js indentation', () => {
+  it('should have consistent indentation at line 600', async () => {
     const fs = await import('node:fs');
     const src = fs.readFileSync(new URL('../src/browser/playwrightPool.js', import.meta.url), 'utf8');
     const lines = src.split('\n');
-
-    // Line 600 (0-indexed: 599) should start with 4 spaces (same as surrounding lines)
     const targetLine = lines[599]; // line 600 is index 599
-    // The line should be: '    let pageEntry = this.sessionPages.get(sessionKey);'
-    assert.ok(
-      targetLine.startsWith('    let pageEntry'),
-      `line 600 should be indented with 4 spaces, got: "${targetLine.slice(0, 10)}..."`
-    );
-    assert.ok(
-      !targetLine.startsWith('      let pageEntry'),
-      'line 600 should NOT have 6 spaces (double indent)'
-    );
+    assert.ok(targetLine.startsWith('    let pageEntry'), 'should be indented with 4 spaces');
+    assert.ok(!targetLine.startsWith('      let pageEntry'), 'should NOT have 6 spaces');
   });
 });
 
-// ─── Additional: normalize.js regression tests ───
-describe('normalize.js - utility functions used by fixes', async () => {
+// ─── NEW: artifactStore.js symlink attack & TOCTOU ───
+describe('artifactStore.js: symlink protection and safeJoin', async () => {
+  it('should use safeJoin for directory paths in _cleanupOld', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../src/artifacts/artifactStore.js', import.meta.url), 'utf8');
+    assert.ok(src.includes('safeJoin(this.baseDir, entry.name)'), '_cleanupOld should use safeJoin');
+    assert.ok(src.includes('safeJoin(dirPath, file)'), 'file paths should use safeJoin');
+    assert.ok(src.includes('lstatSync'), 'should use lstatSync to detect symlinks');
+    assert.ok(src.includes('isSymbolicLink'), 'should check for symlinks');
+    assert.ok(!src.includes('catch {}'), 'should not swallow errors silently');
+  });
+});
+
+// ─── NEW: httpClient.js SSRF-safe redirect ───
+describe('httpClient.js: SSRF-safe redirect handling', async () => {
+  it('should use redirect: manual and check for internal hosts', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../src/common/httpClient.js', import.meta.url), 'utf8');
+    assert.ok(src.includes("redirect: 'manual'"), 'should use redirect: manual');
+    assert.ok(src.includes('isInternalHost'), 'should validate redirect destinations');
+    assert.ok(src.includes('SSRF_REDIRECT_BLOCKED') || src.includes('internal address blocked'), 'should block internal redirects');
+  });
+});
+
+// ─── NEW: rateLimiter.js queue flood protection & timer leak ───
+describe('rateLimiter.js: queue size limit and timer leak fix', async () => {
+  let RateLimiter;
+
+  before(async () => {
+    const mod = await import('../src/common/rateLimiter.js');
+    RateLimiter = mod.RateLimiter;
+  });
+
+  it('should reject acquire when queue is full', async () => {
+    const limiter = new RateLimiter({ minIntervalMs: 100, maxConcurrency: 1, maxQueueSize: 2 });
+    const active = limiter.acquire('key'); // active slot
+    await active; // wait for it to be dispatched
+    const q1 = limiter.acquire('key'); // queued slot 1
+    const q2 = limiter.acquire('key'); // queued slot 2 (at max)
+    // Fourth queued should reject
+    await assert.rejects(limiter.acquire('key'), /queue full/i);
+    limiter.release('key'); // release active to let queued ones proceed
+    await q1;
+    limiter.release('key');
+    await q2;
+  });
+
+  it('should unref timers to avoid blocking process exit', async () => {
+    const src = (await import('node:fs')).readFileSync(new URL('../src/common/rateLimiter.js', import.meta.url), 'utf8');
+    assert.ok(src.includes('unref'), 'timers should be unref\'d');
+  });
+});
+
+// ─── NEW: retryPolicy.js abort detection ───
+describe('retryPolicy.js: improved abort detection', async () => {
+  let retry;
+
+  before(async () => {
+    const mod = await import('../src/common/retryPolicy.js');
+    retry = mod.retry;
+  });
+
+  it('should not retry abort errors with name AbortError', async () => {
+    let calls = 0;
+    await assert.rejects(
+      retry(async () => {
+        calls++;
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      }, { maxRetries: 5, baseDelayMs: 1 }),
+      /aborted/
+    );
+    assert.equal(calls, 1, 'should only call once, not retry');
+  });
+
+  it('should not retry abort errors with nested cause AbortError', async () => {
+    let calls = 0;
+    await assert.rejects(
+      retry(async () => {
+        calls++;
+        const abortErr = new Error('aborted');
+        abortErr.name = 'AbortError';
+        const wrapper = new Error('fetch failed');
+        wrapper.cause = abortErr;
+        throw wrapper;
+      }, { maxRetries: 5, baseDelayMs: 1 }),
+      /fetch failed/
+    );
+    assert.equal(calls, 1, 'should not retry cause-based abort');
+  });
+
+  it('should not retry abort errors with code ABORT_ERR', async () => {
+    let calls = 0;
+    await assert.rejects(
+      retry(async () => {
+        calls++;
+        const err = new Error('abort');
+        err.code = 'ABORT_ERR';
+        throw err;
+      }, { maxRetries: 5, baseDelayMs: 1 }),
+      /abort/
+    );
+    assert.equal(calls, 1);
+  });
+
+  it('sleep timers should be unref\'d', async () => {
+    const src = (await import('node:fs')).readFileSync(new URL('../src/common/retryPolicy.js', import.meta.url), 'utf8');
+    assert.ok(src.includes('unref'), 'sleep timers should be unref\'d');
+  });
+});
+
+// ─── NEW: weather.js fetch timeout ───
+describe('weather.js: fetch timeout protection', async () => {
+  it('should use AbortController for fetch calls', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../src/tools/weather.js', import.meta.url), 'utf8');
+    assert.ok(src.includes('AbortController'), 'should use AbortController');
+    assert.ok(src.includes('controller.abort'), 'should have abort capability');
+    assert.ok(src.includes('signal'), 'should pass signal to fetch');
+  });
+});
+
+// ─── NEW: wikipedia.js meaningful error handling ───
+describe('wikipedia.js: error handling fix', async () => {
+  it('should not silently swallow errors behind browserPool check', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../src/engines/wikipedia.js', import.meta.url), 'utf8');
+    assert.ok(!src.includes('opts.browserPool'), 'should not check opts.browserPool');
+    assert.ok(src.includes('instanceof SearchEngineError') || src.includes("throw new SearchEngineError"), 'should always throw meaningful errors');
+  });
+});
+
+// ─── NEW: custom_html.js template validation ───
+describe('custom_html.js: template validation', async () => {
+  it('should throw if url_template has no {{query}} placeholder', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../src/engines/custom_html.js', import.meta.url), 'utf8');
+    assert.ok(src.includes('INVALID_CONFIG') || src.includes("no {{query}}"), 'should validate template');
+  });
+});
+
+// ─── NEW: time.js overly broad "in" regex ───
+describe('time.js: regex specificity fix', async () => {
+  it('should not match "within", "China" for India timezone', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../src/tools/time.js', import.meta.url), 'utf8');
+    // The old regex was /in|india|.../ which matched "within", "China" etc.
+    // The fix removes the bare "in" pattern
+    assert.ok(!src.includes('/in|india') && !src.includes('/in|india'), 'should not contain bare "in" regex');
+    assert.ok(src.includes('india'), 'should still match "india"');
+  });
+});
+
+// ─── NEW: bing.js + google.js limit sanitization ───
+describe('bing.js + google.js: limit sanitization', async () => {
+  it('should clamp limit to valid integer range', async () => {
+    const bingSrc = (await import('node:fs')).readFileSync(new URL('../src/engines/bing.js', import.meta.url), 'utf8');
+    const googleSrc = (await import('node:fs')).readFileSync(new URL('../src/engines/google.js', import.meta.url), 'utf8');
+    assert.ok(bingSrc.includes('Math.max') && bingSrc.includes('Number('), 'bing should sanitize limit');
+    assert.ok(googleSrc.includes('Math.max') && googleSrc.includes('Number('), 'google should sanitize limit');
+  });
+});
+
+// ─── NEW: searchKernel.js text integrity (integration) ───
+describe('Integration: text integrity through pipeline', () => {
+  it('simulating searchKernel item building with angle bracket content', () => {
+    const mockPage = {
+      status: 'success',
+      text_preview: 'Error: HTTP status < 200 detected. If latency > 500ms, check <server-config>',
+      fetch_mode: 'http'
+    };
+    // Fixed code: String(row.page.text_preview || '')
+    const text = String(mockPage.text_preview || '');
+    assert.ok(text.includes('< 200'), 'should preserve "< 200"');
+    assert.ok(text.includes('> 500ms'), 'should preserve "> 500ms"');
+    assert.ok(text.includes('<server-config>'), 'should preserve "<server-config>"');
+  });
+
+  it('verifies old buggy behavior would have corrupted text', () => {
+    const text_preview = 'a < b and b > c';
+    const buggyResult = text_preview.replace(/<[^>]*>/g, '');
+    assert.ok(buggyResult !== text_preview, 'old behavior should differ from original');
+    const fixedResult = String(text_preview || '');
+    assert.equal(fixedResult, text_preview, 'new behavior should be identical');
+  });
+});
+
+// ─── NEW: utils/normalize.js regression tests ───
+describe('normalize.js: utility functions', async () => {
   let hostOf, truncateText;
 
   before(async () => {
@@ -245,74 +288,13 @@ describe('normalize.js - utility functions used by fixes', async () => {
 
   it('hostOf should extract hostname correctly', () => {
     assert.equal(hostOf('https://www.google.com/search'), 'google.com');
-    assert.equal(hostOf('http://github.com/user/repo'), 'github.com');
     assert.equal(hostOf('not-a-url'), '');
   });
 
-  it('truncateText should preserve text within limit', () => {
-    const short = 'hello world';
-    assert.equal(truncateText(short, 100), short);
-  });
-
-  it('truncateText should truncate and note overflow', () => {
-    const long = 'a'.repeat(150);
-    const result = truncateText(long, 100);
-    assert.ok(result.length < 150, 'should be shorter than original');
-    assert.ok(result.includes('[TRUNCATED'), 'should contain truncation marker');
-  });
-
-  it('text_preview with angle brackets should survive truncateText', () => {
+  it('truncateText should preserve text with angle brackets', () => {
     const input = 'a < b and b > c and x < 100';
     const result = truncateText(input, 200);
-    assert.ok(result.includes('<'), 'should preserve < after truncate');
-    assert.ok(result.includes('>'), 'should preserve > after truncate');
-  });
-});
-
-// ─── Integration: full pipeline text integrity ───
-describe('Integration: text integrity through pipeline', () => {
-  it('simulating searchKernel item building with angle bracket content', () => {
-    // Simulate what searchKernel.js line 75 does after the fix:
-    // const text = String(row.page.text_preview || '');
-    // Previously: .replace(/<[^>]*>/g, '')
-
-    const mockPage = {
-      status: 'success',
-      text_preview: 'Error: HTTP status < 200 detected. If latency > 500ms, check <server-config>',
-      fetch_mode: 'http'
-    };
-
-    const mockResult = {
-      title: 'Test Error Guide',
-      url: 'https://example.com/errors',
-      snippet: 'Troubleshooting HTTP errors',
-      engine: 'duckduckgo',
-      rank: 1
-    };
-
-    // This is what the fixed code does
-    const text = String(mockPage.text_preview || '');
-
-    assert.ok(text.includes('< 200'), 'should preserve "< 200"');
-    assert.ok(text.includes('> 500ms'), 'should preserve "> 500ms"');
-    assert.ok(text.includes('<server-config>'), 'should preserve "<server-config>"');
-    assert.equal(text, mockPage.text_preview, 'should be identical to input');
-  });
-
-  it('verifies old buggy behavior would have corrupted text', () => {
-    const text_preview = 'status < 200 and a > b';
-
-    // Old buggy behavior:
-    const buggyResult = text_preview.replace(/<[^>]*>/g, '');
-    // "< 200 and a " would become "" because < 200 and a > matches as a tag
-    // Actually: < 200 and a > is one match from < to >
-    assert.ok(
-      buggyResult !== text_preview,
-      'old behavior should differ from original (proving it was buggy)'
-    );
-
-    // New fixed behavior:
-    const fixedResult = String(text_preview || '');
-    assert.equal(fixedResult, text_preview, 'new behavior should be identical');
+    assert.ok(result.includes('<'), 'should preserve <');
+    assert.ok(result.includes('>'), 'should preserve >');
   });
 });

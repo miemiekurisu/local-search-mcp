@@ -1,5 +1,25 @@
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    // Allow the process to exit if this is the only handle remaining
+    if (typeof t.unref === 'function') t.unref();
+  });
+}
+
+function isAbortError(err) {
+  // Check direct name (undici AbortError)
+  if (err && err.name === 'AbortError') return true;
+  // Check cause chain for nested abort errors
+  let cause = err?.cause;
+  for (let depth = 0; depth < 5; depth++) {
+    if (!cause) break;
+    if (cause.name === 'AbortError') return true;
+    if (cause.code === 'ABORT_ERR') return true;
+    cause = cause.cause;
+  }
+  // Also check the top-level code property
+  if (err?.code === 'ABORT_ERR') return true;
+  return false;
 }
 
 export async function retry(fn, options = {}) {
@@ -27,7 +47,8 @@ export async function retry(fn, options = {}) {
 
       return result;
     } catch (err) {
-      if (err.name === 'AbortError' || (err.cause && err.cause.name === 'AbortError')) {
+      // AbortError should never be retried — check name, code, and nested cause
+      if (isAbortError(err)) {
         throw err;
       }
 

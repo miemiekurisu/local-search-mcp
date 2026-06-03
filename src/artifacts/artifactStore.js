@@ -21,23 +21,32 @@ export class ArtifactStore {
       const entries = fs.readdirSync(this.baseDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        const dirPath = path.join(this.baseDir, entry.name);
+        const dirPath = safeJoin(this.baseDir, entry.name);
         try {
           const files = fs.readdirSync(dirPath);
           for (const file of files) {
             if (!file.endsWith('.txt') && !file.endsWith('.json')) continue;
-            const filePath = path.join(dirPath, file);
-            const stat = fs.statSync(filePath);
-            if (now - stat.mtimeMs > ARTIFACT_TTL_MS) {
+            const filePath = safeJoin(dirPath, file);
+            // Use lstatSync to detect symlinks — never follow them
+            const lstat = fs.lstatSync(filePath);
+            if (lstat.isSymbolicLink()) {
+              fs.unlinkSync(filePath);
+              continue;
+            }
+            if (now - lstat.mtimeMs > ARTIFACT_TTL_MS) {
               fs.unlinkSync(filePath);
             }
           }
           if (fs.readdirSync(dirPath).length === 0) {
             fs.rmdirSync(dirPath);
           }
-        } catch {}
+        } catch (err) {
+          console.error(`[artifactStore] cleanup error in ${dirPath}:`, err.message);
+        }
       }
-    } catch {}
+    } catch (err) {
+      console.error('[artifactStore] cleanup scan error:', err.message);
+    }
   }
 
   writeText(kind, text, metadata = {}) {

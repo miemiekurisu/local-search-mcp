@@ -80,7 +80,10 @@ async function geocode(location) {
 
 async function fetchGeo(name, lang) {
   try {
-    const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(name)}&count=10&language=${lang}&format=json`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(`${GEO_URL}?name=${encodeURIComponent(name)}&count=10&language=${lang}&format=json`, { signal: controller.signal });
+    clearTimeout(timer);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -90,6 +93,8 @@ async function fetchGeo(name, lang) {
 
 async function fetchWeather(lat, lon) {
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
     const params = new URLSearchParams({
       latitude: lat,
       longitude: lon,
@@ -98,7 +103,8 @@ async function fetchWeather(lat, lon) {
       timezone: 'auto',
       forecast_days: '7'
     });
-    const res = await fetch(`${FORECAST_URL}?${params}`);
+    const res = await fetch(`${FORECAST_URL}?${params}`, { signal: controller.signal });
+    clearTimeout(timer);
     if (!res.ok) return { error: `HTTP ${res.status}` };
     const data = await res.json();
     if (data.error) return { error: data.reason || data.error };

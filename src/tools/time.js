@@ -33,7 +33,7 @@ export function getCurrentTime(query) {
       tz = 'Asia/Seoul';
     } else if (/ru|russia|moscow/i.test(q)) {
       tz = 'Europe/Moscow';
-    } else if (/in|india|mumbai|delhi/i.test(q)) {
+    } else if (/india|mumbai|delhi|kolkata/i.test(q)) {
       tz = 'Asia/Kolkata';
     } else if (/^en\b/i.test(q) || /^english/i.test(q)) {
       lang = 'en-US';

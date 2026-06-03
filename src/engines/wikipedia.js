@@ -23,7 +23,8 @@ export async function searchWikipedia(query, opts = {}) {
     }));
     return uniqueByUrl(results, limit);
   } catch (err) {
-    if (!opts.browserPool) throw new SearchEngineError('SEARCH_FAILED', err.message);
-    return [];
+    // Always throw — the browserPool check was meaningless since this function doesn't use it
+    if (err instanceof SearchEngineError) throw err;
+    throw new SearchEngineError('SEARCH_FAILED', err.message);
   }
 }

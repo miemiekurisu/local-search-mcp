@@ -101,7 +101,7 @@ async function searchGoogleApi(query, limit) {
 }
 
 export async function searchGoogle(query, opts = {}) {
-  const limit = opts.limit || CONFIG.defaultSearchLimit;
+  const limit = Math.max(1, Math.min(20, Number(opts.limit || CONFIG.defaultSearchLimit)));
   
   const results = await searchGoogleBrowser(query, { ...opts, limit });
   if (results.length > 0) return results;

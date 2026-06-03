@@ -6,7 +6,12 @@ import { makeResult, SearchEngineError } from './base.js';
 
 export async function searchCustomHtml(engineConfig, query, opts = {}) {
   const limit = opts.limit || CONFIG.defaultSearchLimit;
-  const url = String(engineConfig.url_template || '').replace('{{query}}', encodeURIComponent(query));
+  // Only replace the first {{query}} occurrence; validate the result is a valid URL
+  const urlTemplate = String(engineConfig.url_template || '');
+  if (!urlTemplate.includes('{{query}}')) {
+    throw new SearchEngineError('INVALID_CONFIG', `Custom engine ${engineConfig.id} has no {{query}} placeholder in url_template`);
+  }
+  const url = urlTemplate.replace('{{query}}', encodeURIComponent(query));
   const proxy = opts.proxyRouter?.resolve(opts.proxyProfile || 'auto', url)?.proxyUrl;
   const resp = await fetchWithTimeout(url, {
     timeoutMs: opts.timeoutMs || CONFIG.defaultTimeoutMs,

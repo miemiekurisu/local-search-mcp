@@ -1,5 +1,22 @@
 import { fetch, ProxyAgent } from 'undici';
 
+function isInternalHost(hostname) {
+  if (!hostname) return true;
+  if (hostname.startsWith('[') && hostname.endsWith(']')) hostname = hostname.slice(1, -1);
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+  if (hostname.startsWith('192.168.')) return true;
+  if (hostname.startsWith('10.')) return true;
+  if (hostname.startsWith('172.16.') || hostname.startsWith('172.17.') || hostname.startsWith('172.18.') ||
+      hostname.startsWith('172.19.') || hostname.startsWith('172.2') || hostname.startsWith('172.30') || hostname.startsWith('172.31')) return true;
+  if (hostname === '169.254.169.254') return true;
+  if (hostname === '0.0.0.0') return true;
+  if (hostname.startsWith('fc') || hostname.startsWith('fd')) return true;
+  if (hostname.startsWith('fe8') || hostname.startsWith('fe9') || hostname.startsWith('fea') || hostname.startsWith('feb')) return true;
+  if (hostname.endsWith('.internal') || hostname.endsWith('.local')) return true;
+  if (hostname === 'host.docker.internal') return true;
+  return false;
+}
+
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -72,7 +89,7 @@ export class HttpClient {
         method,
         headers: requestHeaders,
         signal: controller.signal,
-        redirect: 'follow',
+        redirect: 'manual',
       };
 
       if (body !== undefined && body !== null) {
@@ -103,13 +120,38 @@ export class HttpClient {
       };
 
       let response;
-      if (retryPolicy) {
-        response = await retryPolicy.execute(executeFetch);
-      } else {
-        response = await executeFetch();
+      let currentUrl = targetUrl;
+      const maxRedirects = 5;
+      for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
+        response = retryPolicy
+          ? await retryPolicy.execute(() => fetch(currentUrl, init))
+          : await fetch(currentUrl, init);
+
+        const isRedirect = [301, 302, 303, 307, 308].includes(response.status);
+        if (!isRedirect) break;
+
+        const location = response.headers.get('location');
+        if (!location) break;
+
+        let nextUrl;
+        try {
+          nextUrl = new URL(location, currentUrl);
+        } catch {
+          break;
+        }
+
+        if (isInternalHost(nextUrl.hostname)) {
+          throw new HttpClientError(`Redirect to internal address blocked: ${nextUrl.hostname}`, { url: currentUrl });
+        }
+
+        if (redirectCount >= maxRedirects) {
+          throw new HttpClientError(`Too many redirects (${redirectCount})`, { url: currentUrl });
+        }
+
+        currentUrl = nextUrl.toString();
       }
 
-      return await this._parseResponse(response, responseType, targetUrl);
+      return await this._parseResponse(response, responseType, currentUrl);
     } finally {
       clearTimeout(timer);
     }

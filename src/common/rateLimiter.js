@@ -1,7 +1,8 @@
 export class RateLimiter {
-  constructor({ minIntervalMs = 1000, maxConcurrency = 1 } = {}) {
+  constructor({ minIntervalMs = 1000, maxConcurrency = 1, maxQueueSize = 100 } = {}) {
     this._minIntervalMs = minIntervalMs;
     this._maxConcurrency = maxConcurrency;
+    this._maxQueueSize = maxQueueSize;
     this._buckets = new Map();
   }
 
@@ -12,7 +13,10 @@ export class RateLimiter {
       this._buckets.set(key, bucket);
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      if (bucket.queue.length >= this._maxQueueSize) {
+        return reject(new Error('Rate limiter queue full (max queue size exceeded)'));
+      }
       bucket.queue.push(resolve);
       this._drain(key);
     });
@@ -36,10 +40,12 @@ export class RateLimiter {
 
     if (elapsed < this._minIntervalMs) {
       const waitTime = this._minIntervalMs - elapsed;
-      bucket.timer = setTimeout(() => {
+      const t = setTimeout(() => {
         bucket.timer = null;
         this._dispatchBatch(key);
       }, waitTime);
+      bucket.timer = t;
+      if (typeof t.unref === 'function') t.unref();
       return;
     }
 
@@ -63,7 +69,7 @@ export class RateLimiter {
     }
 
     if (bucket.queue.length > 0 && bucket.activeCount < this._maxConcurrency) {
-      this._drain(key);
+      setImmediate(() => this._drain(key));
     }
   }
 }
