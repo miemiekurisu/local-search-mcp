@@ -85,7 +85,7 @@ function computeSourceAuthority(paper) {
 }
 
 function computeRecency(paper, domain) {
-  const now = 2026;
+  const now = new Date().getFullYear();
   const year = paper.year;
   if (!year) return 0.3;
 

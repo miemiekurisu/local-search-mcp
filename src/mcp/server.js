@@ -52,6 +52,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
         err.code = 'TIMEOUT';
         reject(err);
       }, ms);
+      if (typeof id.unref === 'function') id.unref();
       promise.then(() => clearTimeout(id), () => clearTimeout(id)).catch(() => {});
     });
     return Promise.race([promise, timer]);

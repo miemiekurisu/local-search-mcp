@@ -153,10 +153,7 @@ async function stealthPlugin(page) {
       });
     } catch (_e) {}
 
-    /* ---- chrome.csi for timing ---- */
-    try {
-      const origGet = Object.getOwnPropertyDescriptor(PerformanceTiming.prototype, 'connectEnd') || null;
-    } catch (_e) {}
+    /* ---- chrome.csi for timing (no-op, kept for compatibility) ---- */
 
     /* ---- navigator.plugins ---- */
     const pluginList = [

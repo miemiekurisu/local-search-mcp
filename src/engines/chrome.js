@@ -12,7 +12,10 @@ export async function searchViaChromeDevTools(query, opts = {}) {
   const limit = Math.max(1, Math.min(20, Number(opts.limit || 10)));
   
   try {
-    const safeQuery = query.replace(/[&|;`$(){}<>!#"\']/g, '');
+    if (typeof query !== 'string') {
+    throw new Error('query must be a non-empty string');
+  }
+  const safeQuery = query.replace(/[&|;`$(){}<>!#"\']/g, '');
     const npxCmd = `npx -y chrome-devtools-mcp@latest search --query "${safeQuery}" --limit ${limit} --browser-url ${CHROME_DEBUG_URL}`;
     const { stdout, stderr } = await execAsync(npxCmd, { timeout: 30000 });
     

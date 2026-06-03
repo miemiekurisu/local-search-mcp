@@ -8,10 +8,13 @@ export async function mapLimit(items, concurrency, fn, { timeoutMs } = {}) {
       if (timeoutMs) {
         results[i] = await Promise.race([
           fn(items[i], i),
-          new Promise((_, reject) => setTimeout(
-            () => reject(Object.assign(new Error(`mapLimit item timed out after ${timeoutMs}ms`), { code: 'MAP_LIMIT_TIMEOUT' })),
-            timeoutMs
-          ))
+          new Promise((_, reject) => {
+            const id = setTimeout(
+              () => reject(Object.assign(new Error(`mapLimit item timed out after ${timeoutMs}ms`), { code: 'MAP_LIMIT_TIMEOUT' })),
+              timeoutMs
+            );
+            if (typeof id.unref === 'function') id.unref();
+          })
         ]);
       } else {
         results[i] = await fn(items[i], i);

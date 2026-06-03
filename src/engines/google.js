@@ -24,60 +24,6 @@ async function rateLimitWait() {
   lastRequestTime = Date.now();
 }
 
-async function humanScroll(page) {
-  const scrollCount = 1 + Math.floor(Math.random() * 2);
-  for (let i = 0; i < scrollCount; i++) {
-    await page.mouse.wheel(Math.random() * 200 - 100, Math.random() * 300 + 100);
-    await page.waitForTimeout(randomDelay(200, 800));
-  }
-}
-
-async function humanMove(page, startX, startY, endX, endY) {
-  const steps = 5 + Math.floor(Math.random() * 10);
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const x = startX + (endX - startX) * t + (Math.random() * 20 - 10);
-    const y = startY + (endY - startY) * t + (Math.random() * 20 - 10);
-    await page.mouse.move(x, y);
-    await page.waitForTimeout(randomDelay(10, 50));
-  }
-}
-
-async function randomClick(page) {
-  const box = await page.$('#search') || await page.$('html');
-  if (box) {
-    const rect = await box.boundingBox();
-    if (rect) {
-      const x = rect.x + Math.random() * rect.width;
-      const y = rect.y + Math.random() * 100;
-      await page.mouse.click(x, y);
-    }
-  }
-}
-
-async function initGoogleSession(page) {
-  await page.goto('https://www.google.com/?hl=en', { waitUntil: 'domcontentloaded', timeout: 15000 });
-  await page.waitForTimeout(randomDelay(1000, 2500));
-  if (page.url().includes('sorry')) throw new SearchEngineError('ENGINE_BLOCKED', 'Google IP blocked');
-}
-
-async function typeAndSearch(page, query, limit) {
-  const searchBox = await page.$('input[name="q"]');
-  if (searchBox) {
-    await searchBox.click();
-    await page.waitForTimeout(randomDelay(100, 300));
-    await searchBox.fill('');
-    await page.waitForTimeout(randomDelay(50, 150));
-    await searchBox.type(query, { delay: randomDelay(50, 150) });
-    await page.waitForTimeout(randomDelay(100, 300));
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(randomDelay(1500, 3000));
-  } else {
-    await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=${limit}&hl=en`, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(randomDelay(1500, 3000));
-  }
-}
-
 async function extractSearchResults(page, limit) {
   const html = await page.content();
   if (isLikelyBlockedText(html)) throw new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha');

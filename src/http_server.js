@@ -11,11 +11,20 @@ const RATE_LIMIT_WINDOW_MS = 60000;
 const RATE_LIMIT_MAX_REQUESTS = 60;
 
 const rateLimitMap = new Map();
+const RATE_LIMIT_MAX_ENTRIES = 10000;
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of rateLimitMap) {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
       rateLimitMap.delete(key);
+    }
+  }
+  // Safety valve: evict oldest entries if map grows too large
+  if (rateLimitMap.size > RATE_LIMIT_MAX_ENTRIES) {
+    const entries = [...rateLimitMap.entries()].sort((a, b) => a[1].windowStart - b[1].windowStart);
+    rateLimitMap.clear();
+    for (const e of entries.slice(-Math.floor(RATE_LIMIT_MAX_ENTRIES / 2))) {
+      rateLimitMap.set(e[0], e[1]);
     }
   }
 }, 60000).unref();
@@ -233,7 +242,7 @@ app.post('/mcp', async (req, res) => {
 
     // For tools/call — execute the tool
     if (message.method === 'tools/call') {
-      const { name, arguments: args } = message.params;
+      const { name, arguments: args } = message.params || {};
       let result;
 
       switch (name) {

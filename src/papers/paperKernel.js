@@ -45,6 +45,13 @@ async function fetchWithRetry(url, options = {}, bodyReader) {
         signal: controller.signal
       });
       if (!res.ok) {
+        const retryAfter = res.headers.get('retry-after');
+        if (retryAfter && attempt === 1) {
+          clearTimeout(timer);
+          const delay = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : 3000;
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
         if (res.status === 429 && attempt === 1) {
           clearTimeout(timer);
           await new Promise(r => setTimeout(r, 3000));
@@ -58,7 +65,8 @@ async function fetchWithRetry(url, options = {}, bodyReader) {
       clearTimeout(timer);
     }
   }
-  throw Object.assign(new Error('HTTP 429 (retry exhausted)'), { status: 429 });
+  // Preserve the last actual error instead of always reporting 429
+  throw Object.assign(new Error(`fetchWithRetry exhausted after 2 attempts`), { status: 429 });
 }
 
 async function fetchJson(url, options = {}) {
@@ -198,15 +206,17 @@ function normalizeOpenalexResult(work) {
   });
 }
 
-function reconstructAbstract(invertedIndex) {
+function reconstructAbstract(invertedIndex, maxLen = 10000) {
   if (!invertedIndex) return '';
-  const positions = [];
+  const map = new Map();
   for (const [word, indices] of Object.entries(invertedIndex)) {
     for (const pos of indices) {
-      positions[pos] = word;
+      if (pos >= maxLen) continue; // guard against maliciously large position values
+      map.set(pos, word);
     }
   }
-  return positions.filter(Boolean).join(' ');
+  const sorted = [...map.entries()].sort((a, b) => a[0] - b[0]);
+  return sorted.map(([, w]) => w).join(' ');
 }
 
 function normalizeSemanticScholarResult(paper) {
@@ -244,7 +254,7 @@ function normalizeCrossrefResult(work) {
     title,
     authors,
     year: work.published?.dateParts?.[0]?.[0] || null,
-    published_date: work.created?.dateTime || work.issued?.dateParts ? `${work.issued.dateParts[0]?.join('-')}` : null,
+    published_date: work.created?.dateTime || work.issued?.dateParts ? `${(Array.isArray(work.issued.dateParts[0]) ? work.issued.dateParts[0] : []).join('-')}` : null,
     venue: work['container-title']?.[0] || work['publisher'] || '',
     publication_type: work.type || 'unknown',
     doi,
