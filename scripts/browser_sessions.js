@@ -70,6 +70,10 @@ function printSessions(sessions) {
 }
 
 async function request(path, init) {
+  const bearerToken = process.env.MCP_BEARER_TOKEN || process.env.LOCAL_SEARCH_BEARER_TOKEN || '';
+  if (bearerToken) {
+    init = { ...init, headers: { ...init.headers, 'Authorization': `Bearer ${bearerToken}` } };
+  }
   let response;
   try {
     response = await fetch(`${SERVER_URL}${path}`, init);

@@ -4,6 +4,9 @@ import path from 'path';
 export const CONFIG = {
   timezone: process.env.TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone,
   port: Number(process.env.PORT || 8765),
+  mcpBearerToken: process.env.MCP_BEARER_TOKEN || '',
+  rateLimitMaxRequests: clampInt(process.env.RATE_LIMIT_MAX_REQUESTS, 100, 1, 10000),
+  rateLimitWindowMs: clampInt(process.env.RATE_LIMIT_WINDOW_MS, 60000, 1000, 3600000),
   artifactDir: process.env.ARTIFACT_DIR || '/data/artifacts',
   artifactTtlDays: clampInt(process.env.ARTIFACT_TTL_DAYS, 7, 1, 365),
   browserStateDir: process.env.BROWSER_STATE_DIR || '/data/browser-state',

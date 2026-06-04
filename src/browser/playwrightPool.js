@@ -661,26 +661,29 @@ export class PlaywrightPool {
     }
   }
 
-  sessionStatus(sessionKey) {
+  sessionStatus(sessionKey, { redact } = {}) {
     const statePath = this.getSessionStatePath(sessionKey);
     const entry = this.sessionPages.get(sessionKey);
     const pinnedPage = entry ? entry.page : null;
-    return {
+    const status = {
       session: sessionKey,
       saved_state_exists: Boolean(statePath && fs.existsSync(statePath)),
-      state_path: statePath,
       interactive_page_url: pinnedPage && !pinnedPage.isClosed() ? pinnedPage.url() : null,
       browser_mode: USE_EXISTING_CHROME ? 'existing-cdp' : 'playwright-launch',
       attached_to_existing_browser: browserIsConnected(this.connectedBrowser),
       launched_browser_connected: browserIsConnected(this.browser),
-      cdp_url: USE_EXISTING_CHROME ? CDP_URL : null,
-      visible_browser_profile_dir: VISIBLE_BROWSER_PROFILE_DIR,
       search_headless: CONFIG.headless
     };
+    if (!redact) {
+      status.state_path = statePath;
+      status.cdp_url = USE_EXISTING_CHROME ? CDP_URL : null;
+      status.visible_browser_profile_dir = VISIBLE_BROWSER_PROFILE_DIR;
+    }
+    return status;
   }
 
-  listSessionStatuses(sessionIds = []) {
-    return sessionIds.map(sessionId => this.sessionStatus(sessionId));
+  listSessionStatuses(sessionIds = [], opts) {
+    return sessionIds.map(sessionId => this.sessionStatus(sessionId, opts));
   }
 
   async close() {

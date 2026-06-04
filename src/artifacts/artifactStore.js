@@ -61,18 +61,30 @@ export class ArtifactStore {
   }
 
   read(ref, offset = 0, limit = 8000) {
-    const { kind, file } = parseArtifactRef(ref);
-    const filePath = safeJoin(this.baseDir, kind, file);
-    const text = fs.readFileSync(filePath, 'utf8');
-    const start = Math.max(0, Number(offset) || 0);
-    const end = Math.min(text.length, start + Math.max(1, Number(limit) || 8000));
-    return {
-      artifact_ref: ref,
-      offset: start,
-      limit: end - start,
-      total_chars: text.length,
-      text: text.slice(start, end)
-    };
+    try {
+      const { kind, file } = parseArtifactRef(ref);
+      const filePath = safeJoin(this.baseDir, kind, file);
+      const text = fs.readFileSync(filePath, 'utf8');
+      const start = Math.max(0, Number(offset) || 0);
+      const end = Math.min(text.length, start + Math.max(1, Number(limit) || 8000));
+      return {
+        artifact_ref: ref,
+        offset: start,
+        limit: end - start,
+        total_chars: text.length,
+        text: text.slice(start, end)
+      };
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        throw Object.assign(new Error('Artifact not found'), { code: 'ARTIFACT_NOT_FOUND' });
+      }
+      if (err.message === 'unsafe path traversal' ||
+          err.message === 'invalid artifact ref path' ||
+          err.message === 'invalid artifact ref') {
+        throw Object.assign(new Error('Invalid artifact reference'), { code: 'INVALID_ARTIFACT_REF' });
+      }
+      throw Object.assign(new Error('Failed to read artifact'), { code: 'ARTIFACT_READ_ERROR' });
+    }
   }
 }
 

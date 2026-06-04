@@ -318,3 +318,178 @@ describe('Integration: normalize.js utilities', async () => {
     assert.ok(r.includes('>'));
   });
 });
+
+// ============================================================
+// ROUND 4: Security Hardening (P0-P2)
+// ============================================================
+
+describe('P0: CONFIG has new security env vars', () => {
+  it('should have mcpBearerToken, rateLimitMaxRequests, rateLimitWindowMs', () => {
+    const s = src('../src/config/index.js');
+    assert.ok(s.includes('mcpBearerToken'), 'should have mcpBearerToken');
+    assert.ok(s.includes('rateLimitMaxRequests'), 'should have rateLimitMaxRequests');
+    assert.ok(s.includes('rateLimitWindowMs'), 'should have rateLimitWindowMs');
+  });
+});
+
+describe('P0: http_server.js auth middleware', () => {
+  it('should have authMiddleware that checks Bearer token', () => {
+    const s = src('../src/http_server.js');
+    assert.ok(s.includes('authMiddleware'), 'should have authMiddleware');
+    assert.ok(s.includes('MCP_BEARER_TOKEN') || s.includes('mcpBearerToken'), 'should reference bearer token');
+    assert.ok(s.includes("UNAUTHORIZED"), 'should return UNAUTHORIZED error');
+    assert.ok(s.includes("Bearer "), 'should check Bearer prefix');
+  });
+
+  it('should have rate limiter with configurable values', () => {
+    const s = src('../src/http_server.js');
+    assert.ok(s.includes('rateLimitWindowMs') || s.includes('RATE_LIMIT_WINDOW_MS'), 'should use configurable window');
+    assert.ok(s.includes('rateLimitMaxRequests') || s.includes('RATE_LIMIT_MAX_REQUESTS'), 'should use configurable max');
+    assert.ok(s.includes('Retry-After'), 'should set Retry-After header');
+    assert.ok(s.includes('X-RateLimit-Limit'), 'should set X-RateLimit-Limit header');
+    assert.ok(s.includes('X-RateLimit-Remaining'), 'should set X-RateLimit-Remaining header');
+  });
+
+  it('health endpoint should be before auth middleware', () => {
+    const s = src('../src/http_server.js');
+    const healthIdx = s.indexOf("'/health'");
+    const authIdx = s.indexOf('app.use(authMiddleware)');
+    assert.ok(healthIdx > 0 && authIdx > 0 && healthIdx < authIdx, '/health must be registered before authMiddleware');
+  });
+
+  it('health endpoint should return minimal response', () => {
+    const s = src('../src/http_server.js');
+    const healthLine = s.split('\n').find(l => l.includes('/health') && l.includes('res.json'));
+    assert.ok(healthLine, 'health route should exist');
+    assert.ok(!healthLine.includes('version'), 'health should NOT include version');
+    assert.ok(!healthLine.includes("'name'"), 'health should NOT include name');
+  });
+});
+
+describe('P1: playwrightPool.js sessionStatus redact', () => {
+  it('should accept redact option', () => {
+    const s = src('../src/browser/playwrightPool.js');
+    assert.ok(s.includes('redact'), 'should reference redact');
+    assert.ok(s.includes('{ redact }') || s.includes('opts?.redact') || s.includes('opts.redact') || s.includes('opts?.redact'), 'should accept redact parameter');
+  });
+
+  it('should conditionally include sensitive fields', () => {
+    const s = src('../src/browser/playwrightPool.js');
+    assert.ok(s.includes('if (!redact)'), 'should have conditional for sensitive fields');
+    assert.ok(s.includes('cdp_url'), 'should still have cdp_url field');
+    assert.ok(s.includes('state_path'), 'should still have state_path field');
+    assert.ok(s.includes('visible_browser_profile_dir'), 'should still have visible_browser_profile_dir field');
+  });
+});
+
+describe('P1: searchKernel.js engineStatus redaction', () => {
+  it('engineStatus should use redact: true', () => {
+    const s = src('../src/kernel/searchKernel.js');
+    assert.ok(s.includes('redact: true'), 'should use redact: true for public status');
+  });
+
+  it('should have redactBrowserSession helper', () => {
+    const s = src('../src/kernel/searchKernel.js');
+    assert.ok(s.includes('redactBrowserSession'), 'should have redactBrowserSession helper');
+  });
+
+  it('error details should use redactBrowserSession', () => {
+    const s = src('../src/kernel/searchKernel.js');
+    const redactCalls = (s.match(/redactBrowserSession/g) || []).length;
+    assert.ok(redactCalls >= 2, `should call redactBrowserSession at least twice, got ${redactCalls}`);
+  });
+});
+
+describe('P1: http_server.js error detail redaction', () => {
+  it('asyncRoute should redact error details', () => {
+    const s = src('../src/http_server.js');
+    assert.ok(s.includes('redactBrowserSession') || s.includes('redactErrorDetails'), 'should redact error details in asyncRoute');
+  });
+});
+
+describe('P2: artifactStore.js error sanitization', () => {
+  it('should not leak file paths in errors', () => {
+    const s = src('../src/artifacts/artifactStore.js');
+    assert.ok(s.includes('ARTIFACT_NOT_FOUND'), 'should have ARTIFACT_NOT_FOUND code');
+    assert.ok(s.includes('INVALID_ARTIFACT_REF') || s.includes('Invalid artifact reference'), 'should have invalid ref error');
+    assert.ok(s.includes('ARTIFACT_READ_ERROR') || s.includes('Failed to read artifact'), 'should have read error');
+  });
+
+  it('read() should wrap in try/catch', () => {
+    const s = src('../src/artifacts/artifactStore.js');
+    const readMethod = s.match(/read\(ref[^{]*{([\s\S]*?)\n  \}/);
+    assert.ok(readMethod, 'read method should exist');
+    assert.ok(readMethod[1].includes('try {'), 'read should use try/catch');
+  });
+});
+
+describe('P2: .env.example documents new security vars', () => {
+  it('should document MCP_BEARER_TOKEN', () => {
+    const s = src('../.env.example');
+    assert.ok(s.includes('MCP_BEARER_TOKEN'), 'should have MCP_BEARER_TOKEN');
+  });
+
+  it('should document RATE_LIMIT_MAX_REQUESTS', () => {
+    const s = src('../.env.example');
+    assert.ok(s.includes('RATE_LIMIT_MAX_REQUESTS'), 'should have RATE_LIMIT_MAX_REQUESTS');
+  });
+
+  it('should document RATE_LIMIT_WINDOW_MS', () => {
+    const s = src('../.env.example');
+    assert.ok(s.includes('RATE_LIMIT_WINDOW_MS'), 'should have RATE_LIMIT_WINDOW_MS');
+  });
+});
+
+describe('P2: docker-compose.yml includes new env vars', () => {
+  it('should pass through MCP_BEARER_TOKEN', () => {
+    const s = src('../docker-compose.yml');
+    assert.ok(s.includes('MCP_BEARER_TOKEN'), 'docker-compose should have MCP_BEARER_TOKEN');
+  });
+
+  it('should pass through RATE_LIMIT_MAX_REQUESTS', () => {
+    const s = src('../docker-compose.yml');
+    assert.ok(s.includes('RATE_LIMIT_MAX_REQUESTS'), 'docker-compose should have RATE_LIMIT_MAX_REQUESTS');
+  });
+
+  it('should pass through RATE_LIMIT_WINDOW_MS', () => {
+    const s = src('../docker-compose.yml');
+    assert.ok(s.includes('RATE_LIMIT_WINDOW_MS'), 'docker-compose should have RATE_LIMIT_WINDOW_MS');
+  });
+});
+
+// ============================================================
+// Integration: runtime behavior tests
+// ============================================================
+
+describe('Integration: artifact error messages are sanitized', async () => {
+  let ArtifactStore;
+  before(async () => {
+    const mod = await import('../src/artifacts/artifactStore.js');
+    ArtifactStore = mod.ArtifactStore;
+  });
+
+  it('should return ARTIFACT_NOT_FOUND for missing artifact', async () => {
+    const store = new ArtifactStore('/tmp/test-artifacts-' + Date.now());
+    await new Promise(r => setTimeout(r, 10)); // let cleanup run
+    const err = new Error('test');
+    try {
+      store.read('artifact://nonexistent/test.txt');
+    } catch (e) {
+      assert.equal(e.code, 'ARTIFACT_NOT_FOUND');
+      assert.ok(!e.message.includes('/tmp'), 'should not leak temp path');
+      assert.ok(!e.message.includes('/data'), 'should not leak data path');
+      return;
+    }
+    assert.fail('should have thrown');
+  });
+
+  it('should reject path traversal', async () => {
+    const store = new ArtifactStore('/tmp/test-artifacts-' + Date.now());
+    try {
+      store.read('artifact://../etc/passwd');
+      assert.fail('should have thrown');
+    } catch (e) {
+      assert.equal(e.code, 'INVALID_ARTIFACT_REF');
+    }
+  });
+});

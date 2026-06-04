@@ -34,6 +34,11 @@ services:
        - UNPAYWALL_EMAIL=${UNPAYWALL_EMAIL:-}
        - NOVNC_PASSWORD=${NOVNC_PASSWORD:-}
 
+       # Security: Bearer token auth & rate limiting
+       - MCP_BEARER_TOKEN=${MCP_BEARER_TOKEN:-}
+       - RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS:-100}
+       - RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS:-60000}
+
        # Paper content cache
        - PAPER_CACHE_ENABLED=${PAPER_CACHE_ENABLED:-true}
        - PAPER_CACHE_DIR=/data/cache/papers

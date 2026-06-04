@@ -7,19 +7,16 @@ import { createMcpServer } from './mcp/server.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
-const RATE_LIMIT_WINDOW_MS = 60000;
-const RATE_LIMIT_MAX_REQUESTS = 60;
-
-const rateLimitMap = new Map();
 const RATE_LIMIT_MAX_ENTRIES = 10000;
+const rateLimitMap = new Map();
+
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of rateLimitMap) {
-    if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
+    if (now - entry.windowStart > CONFIG.rateLimitWindowMs * 2) {
       rateLimitMap.delete(key);
     }
   }
-  // Safety valve: evict oldest entries if map grows too large
   if (rateLimitMap.size > RATE_LIMIT_MAX_ENTRIES) {
     const entries = [...rateLimitMap.entries()].sort((a, b) => a[1].windowStart - b[1].windowStart);
     rateLimitMap.clear();
@@ -33,13 +30,39 @@ function rateLimiter(req, res, next) {
   const ip = req.ip || req.connection.remoteAddress || 'unknown';
   const now = Date.now();
   let entry = rateLimitMap.get(ip);
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+  if (!entry || now - entry.windowStart > CONFIG.rateLimitWindowMs) {
     entry = { windowStart: now, count: 0 };
     rateLimitMap.set(ip, entry);
   }
   entry.count++;
-  if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
-    return res.status(429).json({ ok: false, error: { code: 'RATE_LIMITED', message: 'Too many requests' } });
+  const remaining = Math.max(0, CONFIG.rateLimitMaxRequests - entry.count);
+  res.set('X-RateLimit-Limit', String(CONFIG.rateLimitMaxRequests));
+  res.set('X-RateLimit-Remaining', String(remaining));
+  if (entry.count > CONFIG.rateLimitMaxRequests) {
+    const elapsed = now - entry.windowStart;
+    const retryAfter = Math.ceil((CONFIG.rateLimitWindowMs - elapsed) / 1000);
+    res.set('Retry-After', String(Math.max(1, retryAfter)));
+    return res.status(429).json({
+      ok: false,
+      error: {
+        code: 'RATE_LIMITED',
+        message: `Too many requests. Retry after ${Math.max(1, retryAfter)}s.`
+      }
+    });
+  }
+  next();
+}
+
+function authMiddleware(req, res, next) {
+  if (!CONFIG.mcpBearerToken) {
+    return next();
+  }
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ') || auth.slice(7) !== CONFIG.mcpBearerToken) {
+    return res.status(401).json({
+      ok: false,
+      error: { code: 'UNAUTHORIZED', message: 'Invalid or missing Bearer token' }
+    });
   }
   next();
 }
@@ -49,6 +72,27 @@ const mcpServer = createMcpServer(kernel, browserPool);
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(rateLimiter);
+
+// Health endpoint — always public (Docker healthcheck)
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+// Authentication middleware — applied to all routes after /health
+app.use(authMiddleware);
+
+function redactBrowserSession(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const { cdp_url, state_path, visible_browser_profile_dir, ...rest } = obj;
+  return rest;
+}
+
+function redactErrorDetails(details) {
+  if (!details || typeof details !== 'object') return details;
+  const redacted = { ...details };
+  if (redacted.browser_session) {
+    redacted.browser_session = redactBrowserSession(redacted.browser_session);
+  }
+  return redacted;
+}
 
 function asyncRoute(fn) {
   return async (req, res) => {
@@ -63,15 +107,13 @@ function asyncRoute(fn) {
           code: errorObject.code || 'ERROR',
           message: errorObject.message || String(err),
           engine: errorObject.engine,
-          details: errorObject.details,
+          details: redactErrorDetails(errorObject.details),
           stack: process.env.NODE_ENV === 'production' ? undefined : errorObject.stack
         }
       });
     }
   };
 }
-
-app.get('/health', (req, res) => res.json({ ok: true, name: 'local-search-mcp', version: '0.1.0' }));
 app.get('/engine_status', asyncRoute(async () => kernel.engineStatus()));
 app.get('/browser_sessions', asyncRoute(async () => kernel.browserSessions()));
 app.post('/browser_sessions/open', asyncRoute(args => kernel.openBrowserSession(args)));

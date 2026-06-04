@@ -185,7 +185,7 @@ export class SearchKernel {
       engines: this.engines.list(),
       browser_sessions: listBrowserSessions().map(session => ({
         ...session,
-        ...this.browserPool.sessionStatus(session.id)
+        ...this.browserPool.sessionStatus(session.id, { redact: true })
       })),
       proxy_profiles: this.proxyRouter.status(),
       limits: { max_search_limit: CONFIG.maxSearchLimit, max_fetch_concurrency: CONFIG.maxFetchConcurrency }
@@ -196,7 +196,7 @@ export class SearchKernel {
     return {
       sessions: listBrowserSessions().map(session => ({
         ...session,
-        ...this.browserPool.sessionStatus(session.id)
+        ...this.browserPool.sessionStatus(session.id, { redact: false })
       }))
     };
   }
@@ -221,7 +221,7 @@ export class SearchKernel {
         engine: session.engine,
         target_url: targetUrl,
         proxy_profile: proxyProfile,
-        browser_session: this.browserPool.sessionStatus(session.id)
+        browser_session: redactBrowserSession(this.browserPool.sessionStatus(session.id))
       };
       throw err;
     }
@@ -246,7 +246,7 @@ export class SearchKernel {
         ...(err.details || {}),
         session: session.id,
         engine: session.engine,
-        browser_session: this.browserPool.sessionStatus(session.id)
+        browser_session: redactBrowserSession(this.browserPool.sessionStatus(session.id))
       };
       throw err;
     }
@@ -290,4 +290,9 @@ function confidenceHint(url) {
 function makeQueryFamilies(base, prefer) {
   const clean = String(base || '').replace(/\s+/g, ' ').trim();
   return [clean, ...prefer.map(p => `${clean} ${p}`), `${clean} solution`, `${clean} error fix`].filter(Boolean);
+}
+function redactBrowserSession(session) {
+  if (!session) return session;
+  const { cdp_url, state_path, visible_browser_profile_dir, ...rest } = session;
+  return rest;
 }

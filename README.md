@@ -67,7 +67,7 @@ docker compose up --build -d
 
 ```bash
 curl http://localhost:8765/health
-# 返回: {"status":"ok"}
+# 返回: {"ok":true}
 ```
 
 ### 2.2 noVNC 可视化浏览器
@@ -254,7 +254,14 @@ curl -s http://localhost:8765/mcp \
 
 ### 3.9 速率限制
 
-HTTP 接口默认 **60 请求/分钟/IP**。
+HTTP 接口默认 **100 请求/分钟/IP**（可通过 `RATE_LIMIT_MAX_REQUESTS` 和 `RATE_LIMIT_WINDOW_MS` 配置）。
+
+速率限制响应头：
+- `X-RateLimit-Limit` — 当前窗口最大请求数
+- `X-RateLimit-Remaining` — 剩余可用请求数
+- `Retry-After` — 429 响应中包含，单位为秒，指示需要等待多久后重试
+
+> AI 客户端应检查 `Retry-After` 头并在等待后重试，避免持续请求导致服务过载。
 
 ## 4. MCP 模式
 
@@ -344,15 +351,31 @@ npm run browser:sessions -- save all
 
 ### 5.4 自动登录 ChatGPT（可选）
 
-在 `docker-compose.yml` 中设置：
+在 `.env` 文件中设置：
 
-```yaml
-environment:
-  - CHATGPT_EMAIL=your@email.com
-  - CHATGPT_PASSWORD=your_password
+```env
+CHATGPT_EMAIL=your@email.com
+CHATGPT_PASSWORD=your_password
 ```
 
 > 注意：自动登录可能触发 MFA/风控，推荐通过 noVNC 手动登录后保存会话。
+
+### 5.5 Bearer Token 认证
+
+启用 `MCP_BEARER_TOKEN` 后，所有 HTTP API 请求（包括 `scripts/browser_sessions.js`）需携带认证头。
+
+**curl 使用：**
+```bash
+curl -s http://localhost:8765/mcp \
+  -H 'Authorization: Bearer your-token-here' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+**browser_sessions 脚本：** 设置环境变量 `MCP_BEARER_TOKEN` 或 `LOCAL_SEARCH_BEARER_TOKEN`：
+```bash
+MCP_BEARER_TOKEN=your-token-here npm run browser:sessions -- status
+```
 
 ## 6. 配置
 
@@ -391,6 +414,9 @@ environment:
 | `HTTP_LISTEN_PORT` | `8765` | HTTP 服务宿主端口 |
 | `NOVNC_LISTEN_HOST` | `127.0.0.1` | noVNC 宿主监听地址（`0.0.0.0` 允许局域网访问） |
 | `NOVNC_LISTEN_PORT` | `6082` | noVNC 宿主端口 |
+| `MCP_BEARER_TOKEN` | `""`（默认关闭） | 设置后所有端点（除 `/health`）需 `Authorization: Bearer <token>` 认证 |
+| `RATE_LIMIT_MAX_REQUESTS` | `100` | 每个 IP 在每个窗口内的最大请求数 |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | 速率限制窗口（毫秒） |
 
 ### 6.2 自定义搜索引擎
 
@@ -448,6 +474,50 @@ cp config/proxy_profiles.example.json config/proxy_profiles.json
 | Exa | `EXA_API_KEY` | https://exa.ai/ |
 | Google CSE | `GOOGLE_API_KEY` + `GOOGLE_SEARCH_ENGINE_ID` + `ENABLE_GOOGLE_API_FALLBACK=true` | https://developers.google.com/custom-search |
 
+## 6.5 安全配置
+
+### Bearer Token 认证
+
+公网暴露时，设置 `MCP_BEARER_TOKEN` 为所有端点启用认证（`/health` 除外，用于 Docker 健康检查）：
+
+```env
+MCP_BEARER_TOKEN=your-secure-random-token-here
+```
+
+认证后，所有请求需携带 `Authorization: Bearer <token>` 头：
+
+```bash
+curl -s http://localhost:8765/mcp \
+  -H 'Authorization: Bearer your-secure-random-token-here' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+### IP 速率限制
+
+防止内网客户端过多请求导致服务过载（即使无恶意）：
+
+```env
+RATE_LIMIT_MAX_REQUESTS=100
+RATE_LIMIT_WINDOW_MS=60000
+```
+
+当触发限速时，服务端返回 `429` 并附带 `Retry-After` 头（秒），AI 客户端应根据该头等待后重试。
+
+### 信息泄露防护
+
+- `/health` 仅返回 `{"ok": true}`，不泄露版本和名称
+- `engine_status` 不再泄露 CDP URL、内部路径、浏览器 profile 目录
+- `artifact` 错误消息不暴露文件系统路径
+- 引擎错误详情自动脱敏浏览器会话敏感信息
+
+### 其他安全措施
+
+- SSRF 防护：拦截内部地址（IPv4/IPv6）、非 http(s) scheme、redirect 链回指内网
+- 路径遍历防护：artifact 读取限制在 `/data/artifacts/` 内
+- 符号链接防护：artifact 存储检测并删除 symlink
+- 无认证默认：本地使用无需认证，公网暴露**必须**设置 `MCP_BEARER_TOKEN`
+
 ## 7. 测试
 
 ### 7.1 健康检查
@@ -474,8 +544,9 @@ curl -s http://localhost:8765/search \
 # 查看会话状态
 curl -s http://localhost:8765/browser_sessions | jq
 
-# 检查 Chromium CDP
-curl -s http://localhost:9224/json/version
+# 检查 Chromium CDP（需进容器，端口 9224 未映射到宿主机）
+docker exec local-search-mcp-local-search-mcp-1 \
+  curl -s http://127.0.0.1:9224/json/version
 ```
 
 ### 7.4 MCP 验证
