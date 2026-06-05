@@ -1,609 +1,392 @@
 # local-search-mcp
 
-单容器部署的 **Local Search & Web Evidence MCP/HTTP 服务**。不依赖任何付费搜索 API，内置 DuckDuckGo、Bing、Wikipedia、Google 等搜索引擎，支持自定义 HTML 引擎配置。
+> **该手册由AI生成，可能存在错误，请以实际代码为准。**
 
-## 0. 分支与平台说明
+---
 
-本项目维护两个分支，对应两种 Docker 基础镜像方案：
+## ⚠️ 安全警告
 
-| 分支 | 平台 | Dockerfile 基础镜像 | Chromium 来源 | 适用场景 |
-|------|------|---------------------|---------------|----------|
-| `main` | x86_64 / macOS | `playwright:v1.59.1-noble` | 镜像预装 | 主流桌面/服务器 |
-| `arm64` | ARM (aarch64) | `node:22-bookworm` | 构建时自装 | ARM 设备（如 TN3399） |
+**本项目设计用于内网部署及个人使用。**
 
-**为什么分两个分支**：部分 ARM 设备（如 TN3399，内核 5.8.1）的 Docker overlay2 驱动不支持 `security.capability` xattr，导致 `playwright:v1.59.1-noble` 镜像无法 `docker pull`（报错 `failed to register layer: lsetxattr security.capability`）。`arm64` 分支换用 `node:22-bookworm` 基础镜像，在构建阶段通过 `apt-get` 安装系统依赖 + `npx playwright install chromium` 自装 Chromium，绕过 xattr 限制。
+- **请勿将本服务直接暴露到公网**。服务包含浏览器远程访问（noVNC）功能，一旦暴露到公网将导致登录凭据泄露、会话劫持等严重安全风险。
+- 如果必须暴露到公网，**务必**：
+  1. 设置 `MCP_BEARER_TOKEN` 启用 Bearer Token 认证
+  2. 设置强密码 `NOVNC_PASSWORD` 并限制 `NOVNC_LISTEN_HOST=127.0.0.1`
+  3. 使用反向代理（如 Nginx/Caddy）并配置 HTTPS
+  4. 使用防火墙限制访问 IP
+- **免责声明：本项目为开源软件，作者不对使用该应用造成的任何后果和损失承担任何责任。使用者应自行承担安全风险，包括但不限于数据泄露、账户被盗、服务被滥用等。**
 
-**两个分支的代码差异**：
-- `Dockerfile` 不同（基础镜像 + Chromium 安装方式）
-- `docker-compose.yml` 中 `SEARCH_HEADLESS` 默认值不同（main: `true`, arm64: `false`）
-- 其余代码完全一致
+---
 
-**开发流程**：在 `main` 分支开发 → push → ARM 机器上 `git checkout arm64 && git merge main && git pull && docker compose up -d --build`。
+## 项目简介
 
-## 1. 架构概览
+**Local Search & Web Evidence MCP 服务** 是一个单容器部署的本地搜索和网页抓取工具，为 AI Agent 提供 MCP（Model Context Protocol）和 HTTP 接口。
+
+### 核心特性
+
+- **无需付费 API**：内置 DuckDuckGo、Bing、Wikipedia、Google 等搜索引擎，不依赖任何付费搜索服务
+- **多引擎搜索**：支持 DuckDuckGo（HTTP）、Wikipedia（HTTP）、Google（浏览器）、Bing（浏览器）、ChatGPT（浏览器）
+- **网页抓取**：HTTP 抓取失败自动回退到浏览器渲染，支持 SPA 页面
+- **深度研究**：自动生成查询家族，多引擎并行搜索，返回结构化证据
+- **天气查询**：基于 Open-Meteo API，支持中文地名（自动拼音转换）
+- **时间查询**：支持 UTC、北京时间、东京时间、纽约时间、伦敦时间等多时区
+- **自定义引擎**：支持通过 JSON 配置自定义 HTML 搜索引擎
+- **跨平台**：支持 x86_64（Windows/Linux/macOS）和 ARM64（Linux）
+
+### 架构
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Docker Container                                    │
-│  ┌─────────┐  ┌──────────┐  ┌────────────────────┐  │
-│  │  Xvfb   │→ │ Openbox  │→ │ Chromium (visible) │  │
-│  │  :99    │  │ WM       │  │ :9224 CDP          │  │
-│  └─────────┘  └──────────┘  └────────┬───────────┘  │
-│  ┌──────────┐  ┌──────────┐          │              │
-│  │  x11vnc  │→ │ noVNC    │  ┌───────┘              │
-│  │  :5900   │  │ :6080    │  │ Node.js :8765        │
-│  └──────────┘  └──────────┘  │  ├─ HTTP 服务器      │
-│                               │  ├─ MCP 端点         │
-│                               │  ├─ PlaywrightPool   │
-│                               │  └─ SearchKernel     │
-│                               └──────────────────────┘
-│  /data (持久化)                          │
-│    ├── browser-profile (Chromium 用户数据) │
-│    ├── browser-state (会话快照)           │
-│    ├── artifacts (搜索结果/页面文本)       │
-│    └── cache/papers (论文缓存)            │
-└──────────────────────────────────────────────────────┘
+┌────────────── Docker Container ──────────────┐
+│  Xvfb :99 ──▶ Openbox ──▶ Chromium :9224    │
+│  x11vnc :5900 ──▶ noVNC :6080               │
+│  Node.js :8765 (HTTP + MCP)                 │
+│  /data (持久化：profile、会话、artifact)        │
+└──────────────────────────────────────────────┘
 ```
 
-**容器进程架构**（`start.sh` 管理）：
-- Xvfb 虚拟显示（`-screen 0 1920x1080x24`），崩溃自动重启
-- Openbox 窗口管理器，崩溃自动重启
-- x11vnc VNC 服务器（密码保护，`NOVNC_PASSWORD`）
-- noVNC websockify（默认不暴露，手动解开 `docker-compose.yml` 端口映射 + 设密码）
-- Chromium 监督器：启动 Chromium → 崩溃自动重启 → 循环
-- Node.js HTTP 服务器：崩溃则停止容器，由 Docker `restart` 策略拉起
+### 分支说明
 
-## 2. 快速启动
+| 分支 | 平台 | 基础镜像 | 适用场景 |
+|------|------|----------|----------|
+| `main` | x86_64 / macOS | `node:22-bookworm` + Playwright Chromium | 主流桌面/服务器 |
+| `arm64` | ARM (aarch64) | `node:22-bookworm` + apt Chromium | ARM 设备（如 TN3399） |
 
-### 2.1 无浏览器模式（纯搜索）
+---
 
-适用于只需 HTTP 搜索、不需要可视化浏览器的场景：
+## 快速开始
 
 ```bash
-docker compose up --build -d
-```
+# 1. 克隆仓库
+git clone https://github.com/miemiekurisu/local-search-mcp.git
+cd local-search-mcp
 
-启动后验证：
+# 2. 配置环境变量
+cp .env.example .env
 
-```bash
+# 3. 一键启动
+docker compose up -d --build
+
+# 4. 验证
 curl http://localhost:8765/health
 # 返回: {"ok":true}
 ```
 
-### 2.2 noVNC 可视化浏览器
-
-`docker-compose.yml` 已配置 `SEARCH_HEADLESS=false` + `USE_EXISTING_CHROME=true`。
-
-**⚠️ 安全警告：noVNC 默认关闭，必须设置 `NOVNC_PASSWORD` 环境变量才会启动。**
-noVNC 暴露完整的浏览器会话（含登录态、Cookie、页面内容），**不要在生产环境或公网环境开启**。仅在遇到验证码/MFA 需要手动登录时临时启用，用完立即关闭。
-
-启用方法：在 `.env` 文件中设置密码：
-```
-NOVNC_PASSWORD=your_secure_password
-```
-
-然后重启：
+ARM 设备额外步骤：
 ```bash
-docker compose up -d
-```
-
-访问 `http://<宿主机IP>:6082/vnc.html`，输入密码登录。
-
-关闭 noVNC：从 `.env` 删除或注释掉 `NOVNC_PASSWORD` 行，重启即可。
-
-打开浏览器访问：
-
-```
-http://localhost:6082/vnc.html?autoconnect=1&resize=remote
-```
-
-### 2.3 ARM 设备部署
-
-```bash
-# 克隆仓库
-git clone <repo-url> local-search-mcp
-cd local-search-mcp
-
-# 切换到 arm64 分支
 git checkout arm64
-
-# 配置环境变量
-cp .env.example .env
-
-# 构建并启动
 docker compose up -d --build
 ```
 
-### 2.4 数据迁移
+---
 
-可移植数据均在 `./data` 目录：
+## 环境变量配置
 
-| 目录 | 内容 | 可迁移 |
-|------|------|--------|
-| `data/browser-profile` | Chromium 用户目录（登录态、扩展） | 是 |
-| `data/browser-state` | `chatgpt/google/bing` 会话快照 | 是 |
-| `data/artifacts` | 搜索结果与抓取文本 | 是 |
-| `data/cache/papers` | 论文缓存（SQLite + 文件） | 是 |
+详见 `.env.example`，以下为完整参数说明：
 
-迁移到新机器：
+### 网络端口
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `HTTP_LISTEN_HOST` | `0.0.0.0` | MCP 服务监听地址，`0.0.0.0` 表示所有网卡 |
+| `HTTP_LISTEN_PORT` | `8765` | MCP 服务宿主端口 |
+| `NOVNC_LISTEN_HOST` | `127.0.0.1` | noVNC 监听地址，**默认仅本机** |
+| `NOVNC_LISTEN_PORT` | `6082` | noVNC 宿主端口 |
+
+### 代理配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `LAN_PROXY_SERVER` | `""` | 搜索引擎 HTTP 代理（如 `http://192.168.1.100:7890`） |
+| `VISIBLE_BROWSER_PROXY_SERVER` | `""` | Chromium 浏览器代理（`--proxy-server` 参数） |
+| `BROWSER_PROXY_SERVER` | `""` | HTTP profile 代理（proxy_profiles.json） |
+
+### 安全配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `MCP_BEARER_TOKEN` | `""` | Bearer Token，**公网暴露时必须设置** |
+| `NOVNC_PASSWORD` | `""` | noVNC 密码，留空则 noVNC **不启动** |
+| `RATE_LIMIT_MAX_REQUESTS` | `100` | 每 IP 每窗口期最大请求数 |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | 速率限制窗口（毫秒） |
+
+### 搜索引擎
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CHATGPT_EMAIL` | `""` | ChatGPT 自动登录邮箱 |
+| `CHATGPT_PASSWORD` | `""` | ChatGPT 自动登录密码 |
+
+### 学术论文工具
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ENABLE_PAPER_TOOLS` | `true` | 是否启用论文搜索工具 |
+| `OPENALEX_API_KEY` | `""` | OpenAlex API Key（免费） |
+| `CROSSREF_MAILTO` | `""` | Crossref 邮箱（提高限频） |
+| `UNPAYWALL_EMAIL` | `""` | Unpaywall 邮箱 |
+
+### 其他
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `TIMEZONE` | 服务器时区 | `get_time` 工具默认时区（如 `Asia/Shanghai`） |
+
+---
+
+## 功能说明
+
+### 1. 网络搜索
+
+通过 MCP 的 `search_web` 工具或 HTTP 的 `/search` 端点进行多引擎搜索。
 
 ```bash
-# 旧机器
-tar czf local-search-data.tar.gz data/
-
-# 新机器
-scp local-search-data.tar.gz user@new-host:/path/to/project/
-cd /path/to/project/
-tar xzf local-search-data.tar.gz
-docker compose up -d
-```
-
-## 3. HTTP 接口
-
-### 3.1 端点总览
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-| GET | `/engine_status` | 引擎列表、代理状态、浏览器会话 |
-| GET | `/browser_sessions` | 浏览器会话状态 |
-| POST | `/browser_sessions/open` | 打开浏览器登录页 |
-| POST | `/browser_sessions/save` | 保存浏览器会话 |
-| POST | `/search` | 搜索 |
-| POST | `/fetch_page` | 抓取单页 |
-| POST | `/search_and_fetch` | 搜索 + 抓取 |
-| POST | `/research_problem` | 高阶问题研究 |
-| POST | `/artifact` | 读取 artifact |
-| POST | `/mcp` | MCP JSON-RPC 端点 |
-| ALL | `/mcp-stream` | MCP Streamable HTTP 端点 |
-
-### 3.2 搜索
-
-```bash
-curl -s http://localhost:8765/search \
+# MCP 方式
+curl -s -X POST http://localhost:8765/mcp \
   -H 'Content-Type: application/json' \
-  -d '{
-    "query": "ollama openai compatible api",
-    "limit": 10,
-    "engines": ["duckduckgo", "wikipedia"]
-  }' | jq
-```
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_web","arguments":{"query":"Rust 编程","limit":5,"engines":["duckduckgo","wikipedia"]}}}'
 
-**默认搜索引擎**：`duckduckgo` + `wikipedia` + 自定义 HTML 引擎。
-Google、Bing 需要浏览器会话支持；ChatGPT 需要额外登录。
-
-返回：
-```json
-{
-  "query_id": "q_xxx",
-  "results": [{"title": "...", "url": "...", "snippet": "...", "engine": "duckduckgo", "rank": 1}],
-  "failures": [],
-  "artifact_ref": "artifact://search/search_xxx.txt"
-}
-```
-
-### 3.3 搜索 + 抓取
-
-```bash
-curl -s http://localhost:8765/search_and_fetch \
+# HTTP 方式
+curl -s -X POST http://localhost:8765/search \
   -H 'Content-Type: application/json' \
-  -d '{
-    "query": "ollama openai compatible api v1 404",
-    "limit": 10,
-    "fetch_top_k": 5,
-    "max_chars_total": 30000
-  }' | jq
+  -d '{"query":"Rust 编程","limit":5}'
 ```
 
-### 3.4 抓取单页
+**搜索引擎列表：**
+
+| 引擎 | 类型 | 需要登录 | 说明 |
+|------|------|----------|------|
+| `duckduckgo` | HTTP | 否 | 默认引擎，无需浏览器 |
+| `wikipedia` | HTTP | 否 | 默认引擎，无需浏览器 |
+| `google` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
+| `bing` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
+| `chatgpt` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
+
+### 2. 网页抓取
+
+`fetch_page` 工具支持 HTTP 抓取和浏览器渲染两种模式，`mode=auto` 会自动回退。
 
 ```bash
-curl -s http://localhost:8765/fetch_page \
+curl -s -X POST http://localhost:8765/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"url": "https://docs.ollama.com/openai", "mode": "auto", "max_chars": 12000}' | jq
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch_page","arguments":{"url":"https://example.com","mode":"auto"}}}'
 ```
 
-`mode=auto`：先 HTTP 抓取 → 失败后浏览器抓取。
+### 3. 搜索 + 抓取
 
-### 3.5 高阶研究
+`search_and_fetch` 先搜索再抓取前 N 个结果的页面内容，返回结构化证据包。
 
 ```bash
-curl -s http://localhost:8765/research_problem \
+curl -s -X POST http://localhost:8765/search_and_fetch \
   -H 'Content-Type: application/json' \
-  -d '{
-    "problem_signature": {
-      "task": "fix ollama /v1 404",
-      "symptom": "returns 404 not found",
-      "environment": {"ollama_url": "http://localhost:11434"}
-    },
-    "budget": {
-      "max_queries": 4,
-      "max_results_per_query": 8,
-      "max_pages": 8
-    }
-  }' | jq
+  -d '{"query":"AI Agent 框架","limit":10,"fetch_top_k":5}'
 ```
 
-### 3.6 读取 Artifact
+### 4. 深度研究
+
+`research_problem` 根据问题描述自动生成查询家族，多引擎并行搜索，返回带置信度的证据候选。
 
 ```bash
-curl -s http://localhost:8765/artifact \
+curl -s -X POST http://localhost:8765/research_problem \
   -H 'Content-Type: application/json' \
-  -d '{"artifact_ref": "artifact://search/search_xxx.txt", "offset": 0, "limit": 8000}' | jq
+  -d '{"problem_signature":{"task":"排查 Docker 构建失败","symptom":"lsetxattr security.capability"},"budget":{"max_queries":3,"max_pages":5}}'
 ```
 
-### 3.7 天气查询
+### 5. 天气查询
+
+`get_weather` 工具基于 Open-Meteo API，免费无需 API Key，支持中文地名（自动拼音转换）。
 
 ```bash
-curl -s http://localhost:8765/mcp \
+curl -s -X POST http://localhost:8765/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_weather","arguments":{"location":"北京"}}}'
 ```
 
-支持中文城市名（自动拼音转码）、多地点消歧。
+支持中文城市名、区县名（如"上海三林"），自动处理多地点消歧。
 
-### 3.8 时间查询
+### 6. 时间查询
+
+`get_time` 工具支持多时区查询：
 
 ```bash
-curl -s http://localhost:8765/mcp \
+curl -s -X POST http://localhost:8765/mcp \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_time","arguments":{"query":"Beijing"}}}'
 ```
 
 支持时区：`UTC`、`Beijing`、`Tokyo`、`New York`、`London` 等。
 
-### 3.9 速率限制
-
-HTTP 接口默认 **100 请求/分钟/IP**（可通过 `RATE_LIMIT_MAX_REQUESTS` 和 `RATE_LIMIT_WINDOW_MS` 配置）。
-
-速率限制响应头：
-- `X-RateLimit-Limit` — 当前窗口最大请求数
-- `X-RateLimit-Remaining` — 剩余可用请求数
-- `Retry-After` — 429 响应中包含，单位为秒，指示需要等待多久后重试
-
-> AI 客户端应检查 `Retry-After` 头并在等待后重试，避免持续请求导致服务过载。
-
-## 4. MCP 模式
-
-### 4.1 MCP-over-HTTP（推荐）
-
-```bash
-# JSON-RPC 端点
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-
-# Streamable HTTP 端点（支持 SSE）
-curl -s -X GET http://localhost:8765/mcp-stream
-```
-
-### 4.2 MCP stdio
-
-```bash
-docker run --rm -i local-search-mcp:latest npm run mcp
-```
-
-### 4.3 工具列表
+### 7. MCP 工具总览
 
 | 工具 | 说明 |
 |------|------|
 | `search_web` | 多引擎搜索 |
-| `fetch_page` | 抓取单页 |
+| `fetch_page` | 网页抓取（HTTP + 浏览器回退） |
 | `search_and_fetch` | 搜索 + 抓取 |
-| `research_problem` | 高阶研究 |
-| `get_artifact` | 读取 artifact |
+| `research_problem` | 深度研究 |
+| `get_artifact` | 读取历史 artifact |
 | `engine_status` | 引擎/代理/会话状态 |
-| `get_weather` | 天气查询（Open-Meteo，免费） |
-| `get_time` | 时间查询（多时区支持） |
+| `get_weather` | 天气查询（Open-Meteo） |
+| `get_time` | 时间查询（多时区） |
 
-### 4.4 MCP Prompts
+---
 
-| Prompt | 说明 |
-|--------|------|
-| `search_and_summarize` | 搜索 + 摘要 |
-| `debug_error` | 错误调试 |
+## noVNC 可视化浏览器
 
-### 4.5 MCP Resources
+noVNC 提供容器内 Chromium 浏览器的远程可视化访问，用于手动登录 Google、Bing、ChatGPT 等需要浏览器会话的服务。
 
-| 模板 | 说明 |
-|------|------|
-| `artifact://{kind}/{file}` | 读取 artifact 文件 |
+### ⚠️ 安全警告（再次强调）
 
-## 5. 浏览器登录会话
+**noVNC 暴露完整的浏览器会话（含登录态、Cookie、页面内容），存在极大安全隐患。**
 
-支持在容器内 Chromium 中登录 Google、Bing、ChatGPT，并将登录态持久化到 `./data/browser-state`。
+- 默认情况下 noVNC **不启动**（`NOVNC_PASSWORD` 为空）
+- **严禁**将 noVNC 暴露到公网
+- 仅建议在遇到验证码/MFA 需要手动登录时临时启用，使用后立即关闭
+- 如需远程访问 noVNC，请通过 SSH 隧道而非直接暴露端口
 
-### 5.1 操作流程
+### 启用方法
 
-```bash
-# 1. 查看所有会话状态
-curl -s http://localhost:8765/browser_sessions | jq
+1. 在 `.env` 中设置密码（使用强密码）：
+   ```
+   NOVNC_PASSWORD=your_strong_password_here
+   ```
 
-# 2. 打开登录页
-curl -s http://localhost:8765/browser_sessions/open \
-  -H 'Content-Type: application/json' \
-  -d '{"session":"chatgpt"}' | jq
+2. 重启容器：
+   ```bash
+   docker compose up -d
+   ```
 
-# 3. 在 noVNC 中完成登录
-#    访问 http://localhost:6082/vnc.html?autoconnect=1&resize=remote
+3. 通过浏览器访问（仅本机）：
+   ```
+   http://localhost:6082/vnc.html
+   ```
 
-# 4. 保存会话
-curl -s http://localhost:8765/browser_sessions/save \
-  -H 'Content-Type: application/json' \
-  -d '{"session":"chatgpt"}' | jq
-```
-
-### 5.2 批量操作
+### 远程访问 noVNC（推荐 SSH 隧道）
 
 ```bash
-npm run browser:sessions -- status
-npm run browser:sessions -- open all
-npm run browser:sessions -- save all
+# 通过 SSH 隧道转发，不暴露端口到公网
+ssh -L 6082:127.0.0.1:6082 user@server
+# 然后访问 http://localhost:6082/vnc.html
 ```
 
-### 5.3 会话用途
+### 登录和手动验证
 
-| 会话 | 引擎 | 说明 |
-|------|------|------|
-| `google` | `searchGoogle` | 复用 Google 登录态 |
-| `bing` | `searchBing` | 复用 Bing 登录态 |
-| `chatgpt` | `searchChatGPT` | 通过 chrome-devtools-mcp 复用 |
+某些网站（如 Google、ChatGPT）可能触发验证码或 MFA，此时需要通过 noVNC 手动完成验证：
 
-### 5.4 自动登录 ChatGPT（可选）
+1. 启用 noVNC 并访问 `http://localhost:6082/vnc.html`
+2. 在浏览器中完成登录/验证
+3. 保存会话：
+   ```bash
+   curl -s -X POST http://localhost:8765/browser_sessions/save \
+     -H 'Content-Type: application/json' \
+     -d '{"session":"google"}'
+   ```
+4. 验证完成后立即关闭 noVNC（从 `.env` 删除 `NOVNC_PASSWORD`）
 
-在 `.env` 文件中设置：
+### 降低被拦截建议
 
-```env
-CHATGPT_EMAIL=your@email.com
-CHATGPT_PASSWORD=your_password
-```
+- 通过 noVNC 手动登录后保存会话，减少自动登录触发风控的概率
+- 使用代理（设置 `VISIBLE_BROWSER_PROXY_SERVER`）
+- 容器内置 uBlock Origin 扩展，自动拦截广告
 
-> 注意：自动登录可能触发 MFA/风控，推荐通过 noVNC 手动登录后保存会话。
-
-### 5.5 Bearer Token 认证
-
-启用 `MCP_BEARER_TOKEN` 后，所有 HTTP API 请求（包括 `scripts/browser_sessions.js`）需携带认证头。
-
-**curl 使用：**
-```bash
-curl -s http://localhost:8765/mcp \
-  -H 'Authorization: Bearer your-token-here' \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-**browser_sessions 脚本：** 设置环境变量 `MCP_BEARER_TOKEN` 或 `LOCAL_SEARCH_BEARER_TOKEN`：
-```bash
-MCP_BEARER_TOKEN=your-token-here npm run browser:sessions -- status
-```
-
-## 6. 配置
-
-### 6.1 环境变量
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `PORT` | `8765` | HTTP 服务端口 |
-| `TIMEZONE` | 服务器本地时区 | `get_time` 默认时区 |
-| `DEFAULT_SEARCH_LIMIT` | `10`（compose）/ `20`（Dockerfile） | 默认搜索返回条数 |
-| `MAX_SEARCH_LIMIT` | `20` | 搜索硬上限 |
-| `MAX_FETCH_CONCURRENCY` | `3` | 并行抓取数 |
-| `SEARCH_HEADLESS` | `false`（compose）/ `true`（Dockerfile） | 浏览器模式 |
-| `BROWSER_STATE_DIR` | `/data/browser-state` | 会话存储目录 |
-| `USE_EXISTING_CHROME` | `true`（compose）/ `false`（Dockerfile） | 复用容器内 Chromium |
-| `CDP_URL` | `http://127.0.0.1:9224` | Chromium CDP 地址 |
-| `VISIBLE_BROWSER_CDP_PORT` | `9224` | Chromium CDP 端口 |
-| `VISIBLE_BROWSER_PROFILE_DIR` | `/data/browser-profile` | Chromium 用户目录 |
-| `VISIBLE_BROWSER_START_URL` | `about:blank` | Chromium 启动 URL |
-| `VISIBLE_BROWSER_PROXY_SERVER` | `""` | Chromium 代理（`http://host:port`） |
-| `HTTP_PROXY` / `HTTPS_PROXY` | `""` | 全局 HTTP 代理 |
-| `NO_PROXY` | `""` | 代理白名单 |
-| `LAN_PROXY_SERVER` | `""` | 局域网代理服务器地址 |
-| `CHATGPT_EMAIL` / `CHATGPT_PASSWORD` | `""` | ChatGPT 自动登录凭据 |
-| `BRAVE_API_KEY` | `""` | Brave Search 备用 API Key |
-| `TAVILY_API_KEY` | `""` | Tavily 备用 API Key |
-| `EXA_API_KEY` | `""` | Exa 备用 API Key |
-| `GOOGLE_API_KEY` | `""` | Google Custom Search API Key |
-| `GOOGLE_SEARCH_ENGINE_ID` | `""` | Google CSE ID |
-| `ENABLE_GOOGLE_API_FALLBACK` | `""` | 启用 Google API 备用 |
-| `OPENALEX_API_KEY` | `""` | OpenAlex API Key |
-| `CROSSREF_MAILTO` | `""` | Crossref 邮箱 |
-| `UNPAYWALL_EMAIL` | `""` | Unpaywall 邮箱 |
-| `NOVNC_PASSWORD` | `""`（默认关闭） | noVNC 密码，**必须设置才会启动 noVNC** |
-| `HTTP_LISTEN_HOST` | `0.0.0.0` | HTTP 服务监听地址 |
-| `HTTP_LISTEN_PORT` | `8765` | HTTP 服务宿主端口 |
-| `NOVNC_LISTEN_HOST` | `127.0.0.1` | noVNC 宿主监听地址（`0.0.0.0` 允许局域网访问） |
-| `NOVNC_LISTEN_PORT` | `6082` | noVNC 宿主端口 |
-| `MCP_BEARER_TOKEN` | `""`（默认关闭） | 设置后所有端点（除 `/health`）需 `Authorization: Bearer <token>` 认证 |
-| `RATE_LIMIT_MAX_REQUESTS` | `100` | 每个 IP 在每个窗口内的最大请求数 |
-| `RATE_LIMIT_WINDOW_MS` | `60000` | 速率限制窗口（毫秒） |
-
-### 6.2 自定义搜索引擎
+### 关闭 noVNC
 
 ```bash
-cp config/search_engines.example.json config/search_engines.json
+# 从 .env 中删除或注释掉 NOVNC_PASSWORD 行
+# NOVNC_PASSWORD=
+
+# 重启容器
+docker compose up -d
 ```
 
-```json
-[
-  {
-    "id": "my_engine",
-    "type": "html",
-    "url_template": "https://example.com/search?q={{query}}",
-    "method": "GET",
-    "selectors": {
-      "result": ".result-item",
-      "title": "a.title",
-      "url": "a.title",
-      "snippet": ".snippet"
-    }
-  }
-]
-```
+---
 
-调用：
-
-```bash
-curl -s http://localhost:8765/search \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"test", "engines":["my_engine"]}' | jq
-```
-
-### 6.3 代理配置
-
-```bash
-cp config/proxy_profiles.example.json config/proxy_profiles.json
-```
-
-请求时指定：
-
-```json
-{"query": "github issue", "proxy_profile": "corp"}
-```
-
-内置 `no_proxy`：`localhost`、`127.0.0.1`、`10.*`、`172.16-31.*`、`192.168.*`。
-
-### 6.4 付费 API 备用
-
-当内置搜索引擎全部失败时，自动回退到付费 API：
-
-| API | 环境变量 | 获取 |
-|-----|----------|------|
-| Brave Search | `BRAVE_API_KEY` | https://brave.com/search/api/ |
-| Tavily | `TAVILY_API_KEY` | https://tavily.com/ |
-| Exa | `EXA_API_KEY` | https://exa.ai/ |
-| Google CSE | `GOOGLE_API_KEY` + `GOOGLE_SEARCH_ENGINE_ID` + `ENABLE_GOOGLE_API_FALLBACK=true` | https://developers.google.com/custom-search |
-
-## 6.5 安全配置
+## 安全配置
 
 ### Bearer Token 认证
 
-公网暴露时，设置 `MCP_BEARER_TOKEN` 为所有端点启用认证（`/health` 除外，用于 Docker 健康检查）：
+公网暴露时，设置 `MCP_BEARER_TOKEN` 启用认证：
 
 ```env
-MCP_BEARER_TOKEN=your-secure-random-token-here
+MCP_BEARER_TOKEN=your-random-secure-token-here
 ```
 
-认证后，所有请求需携带 `Authorization: Bearer <token>` 头：
+启用后，所有 API 请求（除 `/health`）需携带认证头：
 
 ```bash
 curl -s http://localhost:8765/mcp \
-  -H 'Authorization: Bearer your-secure-random-token-here' \
+  -H 'Authorization: Bearer your-random-secure-token-here' \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-### IP 速率限制
+### 内置安全措施
 
-防止内网客户端过多请求导致服务过载（即使无恶意）：
+- **SSRF 防护**：拦截内网 IP（IPv4/IPv6）、非 http(s) scheme、重定向回内网
+- **路径遍历防护**：artifact 读取限制在 `/data/artifacts/` 内
+- **信息泄露防护**：`/health` 仅返回 `{"ok":true}`，不泄露版本信息
+- **速率限制**：默认 100 请求/分钟/IP，支持自定义
 
-```env
-RATE_LIMIT_MAX_REQUESTS=100
-RATE_LIMIT_WINDOW_MS=60000
-```
+---
 
-当触发限速时，服务端返回 `429` 并附带 `Retry-After` 头（秒），AI 客户端应根据该头等待后重试。
+## 数据持久化
 
-### 信息泄露防护
+所有数据存储在 `./data` 目录（Docker volume 挂载）：
 
-- `/health` 仅返回 `{"ok": true}`，不泄露版本和名称
-- `engine_status` 不再泄露 CDP URL、内部路径、浏览器 profile 目录
-- `artifact` 错误消息不暴露文件系统路径
-- 引擎错误详情自动脱敏浏览器会话敏感信息
+| 目录 | 内容 |
+|------|------|
+| `data/browser-profile` | Chromium 用户目录（登录态、扩展） |
+| `data/browser-state` | 搜索引擎会话快照 |
+| `data/artifacts` | 搜索结果与抓取文本 |
+| `data/cache/papers` | 论文缓存（SQLite + 文件） |
 
-### 其他安全措施
-
-- SSRF 防护：拦截内部地址（IPv4/IPv6）、非 http(s) scheme、redirect 链回指内网
-- 路径遍历防护：artifact 读取限制在 `/data/artifacts/` 内
-- 符号链接防护：artifact 存储检测并删除 symlink
-- 无认证默认：本地使用无需认证，公网暴露**必须**设置 `MCP_BEARER_TOKEN`
-
-## 7. 测试
-
-### 7.1 健康检查
+### 数据迁移
 
 ```bash
-curl http://localhost:8765/health
+# 旧机器打包
+tar czf local-search-data.tar.gz data/
+
+# 新机器解压
+tar xzf local-search-data.tar.gz
+docker compose up -d
 ```
 
-### 7.2 搜索引擎验证
+---
 
-```bash
-# 查看所有引擎
-curl -s http://localhost:8765/engine_status | jq
+## License
 
-# 搜索
-curl -s http://localhost:8765/search \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"test", "engines":["duckduckgo"]}' | jq '.ok'
-```
+本项目采用 **GNU General Public License v3.0 (GPL-3.0)** 协议。
 
-### 7.3 浏览器验证
+完整协议文本见 [LICENSE](LICENSE) 文件，或访问 https://www.gnu.org/licenses/gpl-3.0.html
 
-```bash
-# 查看会话状态
-curl -s http://localhost:8765/browser_sessions | jq
+### 依赖项许可证
 
-# 检查 Chromium CDP（需进容器，端口 9224 未映射到宿主机）
-docker exec local-search-mcp-local-search-mcp-1 \
-  curl -s http://127.0.0.1:9224/json/version
-```
+本项目使用的第三方库遵循各自的开源协议：
 
-### 7.4 MCP 验证
+| 库 | 协议 |
+|----|------|
+| Express | MIT |
+| Playwright | Apache-2.0 |
+| @modelcontextprotocol/sdk | MIT |
+| cheerio | MIT |
+| jsdom | MIT |
+| @mozilla/readability | MPL-2.0 |
+| undici | MIT |
+| zod | MIT |
+| html-to-text | BSD-2-Clause |
+| pdf-parse | MIT |
+| tiny-pinyin | MIT |
+| x11vnc | GPL-2.0 |
+| noVNC | MPL-2.0 |
+| Chromium | BSD-3-Clause |
 
-```bash
-# 列出工具
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools | length'
+### GPL-3.0 概要
 
-# 应该返回 8
-```
+- ✅ 允许自由使用、修改和分发本软件
+- ✅ 允许用于商业用途
+- ⚠️ 修改后的代码必须以相同许可证（GPL-3.0）发布
+- ⚠️ 分发修改版时需提供完整源码
+- ❌ 不提供任何担保，使用者自行承担风险
 
-### 7.5 天气工具验证
+---
 
-```bash
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_weather","arguments":{"location":"Tokyo"}}}' | jq '.result.content[0].text'
-```
-
-### 7.6 时间工具验证
-
-```bash
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_time","arguments":{"query":"UTC"}}}' | jq '.result.content[0].text'
-```
-
-### 7.7 ARM 设备验证
-
-```bash
-# SSH 到 ARM 服务器
-ssh user@arm-host
-
-# 检查容器状态
-docker ps --filter name=local-search --format '{{.Names}} {{.Status}}'
-
-# 检查 Chromium tabs（不应有 about:blank 堆积）
-docker exec local-search-mcp-local-search-mcp-1 \
-  curl -s http://127.0.0.1:9224/json/list | jq 'length'
-
-# 运行搜索后再次检查
-curl -s -X POST http://localhost:8765/search \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"test", "engines":["duckduckgo"]}' > /dev/null
-
-# tabs 数应保持不变（搜索使用独立 context，不污染 default context）
-docker exec local-search-mcp-local-search-mcp-1 \
-  curl -s http://127.0.0.1:9224/json/list | jq 'length'
-```
-
-## 8. 注意事项
-
-- 默认配置不依赖宿主机代理，所有值从环境变量读取，无硬编码 IP
-- `.env` 文件已加入 `.gitignore`，不要提交
-- 遇到 Google/ChatGPT 的 MFA、验证码或风控时，通过 noVNC 手动登录后保存会话
-- 容器内置 uBlock Origin 扩展，自动拦截广告
-- `search_and_fetch` 单页失败会自动跳过，继续处理后续结果
-- 项目不做验证码破解、登录绕过、付费墙绕过
+*Local Search MCP — 为 AI Agent 提供本地搜索和网页证据获取能力。*
