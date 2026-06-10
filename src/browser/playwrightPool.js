@@ -234,7 +234,6 @@ export class PlaywrightPool {
     this.hydratedSharedSessions = new Set();
     this._activePageCount = 0;
     this._pageWaiters = [];
-    this._searchPage = null;
     this._keptPages = new Map();
     this._keptPagesCleanupTimer = setInterval(() => this._cleanupKeptPages(), KEPT_PAGE_CLEANUP_INTERVAL_MS);
     this._keptPagesCleanupTimer.unref();
@@ -534,74 +533,65 @@ export class PlaywrightPool {
       await new Promise(resolve => { this._pageWaiters.push(resolve); });
     }
 
+    this._activePageCount++;
     let context;
     let ownsContext = false;
-    let ownsPage = false;
+    let page = null;
     const isCdpMode = Boolean(this.connectedBrowser);
 
-    if (sessionKey && reuseSession) {
-      ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
-    } else if (isCdpMode) {
-      context = await this.getSearchContext();
-    } else {
-      context = await this.createEphemeralContext({ proxyProfile, url, sessionKey });
-      ownsContext = true;
-    }
-
-    let page;
-    if (isCdpMode && !sessionKey && !ownsContext) {
-      if (this._searchPage && !this._searchPage.isClosed()) {
-        page = this._searchPage;
-      } else {
-        page = await context.newPage();
-        this._searchPage = page;
-      }
-      ownsPage = true;
-    } else {
-      page = await context.newPage();
-    }
-    page.setDefaultTimeout(CONFIG.browserTimeoutMs);
-    await stealthPlugin(page);
-    this._activePageCount++;
-    let keepPageOpen = false;
-    let pageError = null;
     try {
-      const result = await fn(page, context);
-      if (result && result.keepPageOpen) {
-        keepPageOpen = true;
+      if (sessionKey && reuseSession) {
+        ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
+      } else if (isCdpMode) {
+        context = await this.getSearchContext();
+      } else {
+        context = await this.createEphemeralContext({ proxyProfile, url, sessionKey });
+        ownsContext = true;
       }
-      return result;
-    } catch (err) {
-      pageError = err;
-      if (err && err.keepPageOpen) {
-        keepPageOpen = true;
+
+      page = await context.newPage();
+      page.setDefaultTimeout(CONFIG.browserTimeoutMs);
+      await stealthPlugin(page);
+
+      let keepPageOpen = false;
+      try {
+        const result = await fn(page, context);
+        if (result && result.keepPageOpen) {
+          keepPageOpen = true;
+        }
+        return result;
+      } catch (err) {
+        if (err && err.keepPageOpen) {
+          keepPageOpen = true;
+        }
+        throw err;
+      } finally {
+        if (sessionKey) {
+          await this.persistContextState(context, sessionKey);
+        }
+        if (keepPageOpen) {
+          if (isCdpMode || ownsContext) {
+            const key = sessionKey || `_ephemeral_${Date.now()}`;
+            const existing = this._keptPages.get(key);
+            if (existing) {
+              existing.page.close().catch(() => {});
+              if (existing.ownsContext) existing.context.close().catch(() => {});
+            }
+            this._keptPages.set(key, { page, context, ownsContext, createdAt: Date.now() });
+            if (this._keptPages.size > 3) this._cleanupKeptPages();
+          }
+        } else {
+          await page.close().catch(() => {});
+          if (ownsContext) {
+            await context.close().catch(() => {});
+          }
+        }
       }
-      throw err;
     } finally {
       this._activePageCount--;
       if (this._pageWaiters.length > 0) {
         const next = this._pageWaiters.shift();
         next();
-      }
-      if (sessionKey) {
-        await this.persistContextState(context, sessionKey);
-      }
-      if (keepPageOpen) {
-        if (isCdpMode || ownsContext) {
-          const key = sessionKey || `_ephemeral_${Date.now()}`;
-          const existing = this._keptPages.get(key);
-          if (existing) {
-            existing.page.close().catch(() => {});
-            if (existing.ownsContext) existing.context.close().catch(() => {});
-          }
-          this._keptPages.set(key, { page, context, ownsContext, createdAt: Date.now() });
-          if (this._keptPages.size > 3) this._cleanupKeptPages();
-        }
-      } else if (!ownsPage) {
-        await page.close().catch(() => {});
-        if (ownsContext) {
-          await context.close().catch(() => {});
-        }
       }
     }
   }
@@ -722,10 +712,6 @@ export class PlaywrightPool {
     }
     this._pageWaiters = [];
     await this._resetKeptPages();
-    if (this._searchPage && !this._searchPage.isClosed()) {
-      await this._searchPage.close().catch(() => {});
-      this._searchPage = null;
-    }
     for (const entry of this.sessionPages.values()) {
       await entry.page.close().catch(() => {});
     }
