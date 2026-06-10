@@ -96,7 +96,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
       proxy_profile: z.string().optional().describe('Proxy profile name (default: "auto")')
     }
   }, wrapHandler(async (args) => {
-    const result = await withTimeout(kernel.searchWeb(args), 45000);
+    const result = await withTimeout(kernel.searchWeb(args), 120000);
     await closeBrowserAfterSearch(args);
     return jsonContent(result);
   }));
@@ -125,7 +125,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
       proxy_profile: z.string().optional().describe('Proxy profile name')
     }
   }, wrapHandler(async (args) => {
-    const result = await withTimeout(kernel.searchAndFetch(args), 60000);
+    const result = await withTimeout(kernel.searchAndFetch(args), 180000);
     await closeBrowserAfterSearch(args);
     return jsonContent(result);
   }));
