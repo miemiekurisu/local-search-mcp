@@ -5,6 +5,7 @@ import { createKernel } from './app.js';
 import { closeChromeDevtoolsMcpClient } from './browser/chromeDevtoolsMcpClient.js';
 import { createMcpServer } from './mcp/server.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 const RATE_LIMIT_MAX_ENTRIES = 10000;
@@ -377,11 +378,41 @@ mcpServer.connect(mcpTransport).catch(err => {
   console.error('[mcp-http] streamable transport connect error:', err);
 });
 
+// SSE transport for remote MCP clients (opencode uses SSE for "type": "remote")
+const sseMcpServer = createMcpServer(kernel, browserPool);
+const sseTransports = new Map();
+
+app.get('/sse', async (req, res) => {
+  try {
+    const transport = new SSEServerTransport('/messages', res);
+    sseTransports.set(transport.sessionId, transport);
+    res.on('close', () => {
+      sseTransports.delete(transport.sessionId);
+    });
+    await sseMcpServer.connect(transport);
+  } catch (err) {
+    console.error('[sse] connection error:', err);
+    if (!res.headersSent) {
+      res.status(500).end('Internal error');
+    }
+  }
+});
+
+app.post('/messages', async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const transport = sseTransports.get(sessionId);
+  if (!transport) {
+    return res.status(404).end('Session not found');
+  }
+  await transport.handlePostMessage(req, res, req.body);
+});
+
 const server = app.listen(CONFIG.port, '0.0.0.0', () => {
   server.maxConnections = 50;
   console.log(`[local-search-mcp] HTTP server listening on :${CONFIG.port}`);
   console.log(`[local-search-mcp] MCP JSON-RPC endpoint: http://localhost:${CONFIG.port}/mcp`);
   console.log(`[local-search-mcp] MCP Streamable HTTP endpoint: http://localhost:${CONFIG.port}/mcp-stream`);
+  console.log(`[local-search-mcp] MCP SSE transport endpoint: http://localhost:${CONFIG.port}/sse`);
 });
 
 async function shutdown() {
