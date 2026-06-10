@@ -86,11 +86,13 @@ export async function searchGoogleBrowser(query, opts = {}) {
         
         const html = await page.content();
         if (isLikelyBlockedText(html)) {
-          throw new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha in the Chromium browser session', {
+          const err = new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha in the Chromium browser session', {
             session: 'google',
             current_url: page.url(),
             retry_hint: 'Open the google session in noVNC, complete the human verification in the visible Chromium, then retry.'
           });
+          err.keepPageOpen = true;
+          throw err;
         }
         
         const parsed = parseGoogleHtml(html, limit);

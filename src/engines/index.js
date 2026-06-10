@@ -61,7 +61,7 @@ export class EngineRegistry {
     
     for (const engine of engines) {
       try {
-        const timeout = engine === 'chatgpt' ? 120000 : engine === 'google' ? 60000 : engine === 'bing' ? 30000 : 20000;
+        const timeout = engine === 'chatgpt' ? 120000 : engine === 'google' || engine === 'bing' ? 60000 : 20000;
         const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit: poolLimit }), timeout);
         all.push(...results);
       } catch (err) {

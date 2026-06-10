@@ -5,11 +5,11 @@ import { CONFIG, safeJoin } from '../config/index.js';
 
 const CDP_URL = process.env.CDP_URL || 'http://localhost:9222';
 const USE_EXISTING_CHROME = process.env.USE_EXISTING_CHROME === 'true';
-const EXISTING_CHROME_CONNECT_TIMEOUT_MS = envInt('EXISTING_CHROME_CONNECT_TIMEOUT_MS', 15000, 1000);
+const EXISTING_CHROME_CONNECT_TIMEOUT_MS = envInt('EXISTING_CHROME_CONNECT_TIMEOUT_MS', 60000, 5000);
 const EXISTING_CHROME_CONNECT_RETRY_MS = envInt('EXISTING_CHROME_CONNECT_RETRY_MS', 500, 100);
 const VISIBLE_BROWSER_PROFILE_DIR = process.env.VISIBLE_BROWSER_PROFILE_DIR || null;
-const MAX_CONCURRENT_PAGES = envInt('MAX_CONCURRENT_PAGES', 10, 1);
-const MAX_SESSION_CONTEXTS = envInt('MAX_SESSION_CONTEXTS', 10, 1);
+const MAX_CONCURRENT_PAGES = envInt('MAX_CONCURRENT_PAGES', 2, 1);
+const MAX_SESSION_CONTEXTS = envInt('MAX_SESSION_CONTEXTS', 3, 1);
 const KEPT_PAGE_TTL_MS = envInt('KEPT_PAGE_TTL_MS', 300000, 10000);
 const KEPT_PAGE_CLEANUP_INTERVAL_MS = envInt('KEPT_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
 const SESSION_PAGE_TTL_MS = envInt('SESSION_PAGE_TTL_MS', 600000, 60000);
@@ -233,6 +233,8 @@ export class PlaywrightPool {
     this.sessionPages = new Map();
     this.hydratedSharedSessions = new Set();
     this._activePageCount = 0;
+    this._pageWaiters = [];
+    this._searchPage = null;
     this._keptPages = new Map();
     this._keptPagesCleanupTimer = setInterval(() => this._cleanupKeptPages(), KEPT_PAGE_CLEANUP_INTERVAL_MS);
     this._keptPagesCleanupTimer.unref();
@@ -526,11 +528,12 @@ export class PlaywrightPool {
 
   async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false } = {}, fn) {
     if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
-      throw Object.assign(new Error(`Too many concurrent page operations (max ${MAX_CONCURRENT_PAGES})`), { code: 'TOO_MANY_PAGES' });
+      await new Promise(resolve => { this._pageWaiters.push(resolve); });
     }
 
     let context;
     let ownsContext = false;
+    let ownsPage = false;
     const isCdpMode = Boolean(this.connectedBrowser);
 
     if (sessionKey && reuseSession) {
@@ -542,19 +545,41 @@ export class PlaywrightPool {
       ownsContext = true;
     }
 
-    const page = await context.newPage();
+    let page;
+    if (isCdpMode && !sessionKey && !ownsContext) {
+      if (this._searchPage && !this._searchPage.isClosed()) {
+        page = this._searchPage;
+      } else {
+        page = await context.newPage();
+        this._searchPage = page;
+      }
+      ownsPage = true;
+    } else {
+      page = await context.newPage();
+    }
     page.setDefaultTimeout(CONFIG.browserTimeoutMs);
     await stealthPlugin(page);
     this._activePageCount++;
     let keepPageOpen = false;
+    let pageError = null;
     try {
       const result = await fn(page, context);
       if (result && result.keepPageOpen) {
         keepPageOpen = true;
       }
       return result;
+    } catch (err) {
+      pageError = err;
+      if (err && err.keepPageOpen) {
+        keepPageOpen = true;
+      }
+      throw err;
     } finally {
       this._activePageCount--;
+      if (this._pageWaiters.length > 0) {
+        const next = this._pageWaiters.shift();
+        next();
+      }
       if (sessionKey) {
         await this.persistContextState(context, sessionKey);
       }
@@ -569,7 +594,7 @@ export class PlaywrightPool {
           this._keptPages.set(key, { page, context, ownsContext, createdAt: Date.now() });
           if (this._keptPages.size > 3) this._cleanupKeptPages();
         }
-      } else {
+      } else if (!ownsPage) {
         await page.close().catch(() => {});
         if (ownsContext) {
           await context.close().catch(() => {});
@@ -689,7 +714,15 @@ export class PlaywrightPool {
   async close() {
     clearInterval(this._keptPagesCleanupTimer);
     clearInterval(this._sessionPagesCleanupTimer);
+    for (const resolve of this._pageWaiters) {
+      resolve();
+    }
+    this._pageWaiters = [];
     await this._resetKeptPages();
+    if (this._searchPage && !this._searchPage.isClosed()) {
+      await this._searchPage.close().catch(() => {});
+      this._searchPage = null;
+    }
     for (const entry of this.sessionPages.values()) {
       await entry.page.close().catch(() => {});
     }

@@ -15,7 +15,7 @@ export const CONFIG = {
   maxSearchLimit: clampInt(process.env.MAX_SEARCH_LIMIT, 20, 1, 20),
   maxFetchConcurrency: clampInt(process.env.MAX_FETCH_CONCURRENCY, 3, 1, 8),
   defaultTimeoutMs: clampInt(process.env.DEFAULT_TIMEOUT_MS, 15000, 2000, 120000),
-  browserTimeoutMs: clampInt(process.env.BROWSER_TIMEOUT_MS, 25000, 5000, 180000),
+  browserTimeoutMs: clampInt(process.env.BROWSER_TIMEOUT_MS, 45000, 5000, 180000),
   headless: (process.env.SEARCH_HEADLESS || 'true') !== 'false',
   chromeDevtoolsMcpCommand: process.env.CHROME_DEVTOOLS_MCP_COMMAND || 'node_modules/.bin/chrome-devtools-mcp',
   chromeDevtoolsMcpBrowserUrl: process.env.CHROME_DEVTOOLS_MCP_BROWSER_URL || process.env.CDP_URL || 'http://127.0.0.1:9224',
