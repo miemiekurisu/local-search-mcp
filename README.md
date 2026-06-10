@@ -39,7 +39,11 @@
 ┌────────────── Docker Container ──────────────┐
 │  Xvfb :99 ──▶ Openbox ──▶ Chromium :9224    │
 │  x11vnc :5900 ──▶ noVNC :6080               │
-│  Node.js :8765 (HTTP + MCP)                 │
+│  Node.js (HTTP + MCP) :8765                  │
+│  ├─ /mcp         自定义 JSON-RPC 端点         │
+│  ├─ /mcp-stream  Streamable HTTP             │
+│  ├─ /sse         SSE 服务器推送              │
+│  └─ /health      健康检查                     │
 │  /data (持久化：profile、会话、artifact)        │
 └──────────────────────────────────────────────┘
 ```
@@ -227,6 +231,51 @@ curl -s -X POST http://localhost:8765/mcp \
 | `engine_status` | 引擎/代理/会话状态 |
 | `get_weather` | 天气查询（Open-Meteo） |
 | `get_time` | 时间查询（多时区） |
+
+### 8. MCP 传输协议
+
+服务提供三种 MCP 传输方式，分别适配不同客户端场景：
+
+| 端点 | 协议 | 适用客户端 | 说明 |
+|------|------|-----------|------|
+| `POST /mcp` | 自定义 JSON-RPC | 普通 HTTP 客户端（curl、浏览器） | 最早实现的端点，每个请求独立 HTTP 往返，无会话状态 |
+| `/* /mcp-stream` | Streamable HTTP | MCP SDK 标准客户端 | 遵循 MCP Streamable HTTP 规范，支持会话复用 |
+| `GET /sse` + `POST /messages` | SSE 服务器推送 | **opencode remote** 类型客户端 | 基于 Server-Sent Events 的长连接，服务端主动推送结果 |
+
+**SSE 端点（`/sse`）的引入原因：**
+
+opencode 的 `"type": "remote"` 模式仅支持 SSE 传输（而非 Streamable HTTP），因此需要提供 SSE 端点才能将本服务作为 opencode 的远程 MCP 服务器使用。
+
+SSE 实现要点：
+- 每个 `GET /sse` 连接创建一个独立的 `McpServer` 实例 — 因为 MCP SDK 的 `Protocol.connect()` 每个实例仅支持绑定一个传输通道
+- 每个 SSE 连接的 `send()` 通过 Promise 链串行化 — 防止多个工具处理程序并发写入时 SSE 帧交错损坏 JSON-RPC 消息边界
+- 连接关闭时自动清理对应的 server 和 transport 实例
+
+**opencode 客户端配置示例：**
+
+```json
+{
+  "mcpServers": {
+    "local-search": {
+      "type": "remote",
+      "url": "http://<server-ip>:8765/sse"
+    }
+  }
+}
+```
+
+注意：opencode 默认 MCP 远程超时为 5 秒，搜索类操作耗时较长，需要在 opencode 配置中设置 `timeout`：
+```json
+{
+  "mcpServers": {
+    "local-search": {
+      "type": "remote",
+      "url": "http://<server-ip>:8765/sse",
+      "timeout": 120
+    }
+  }
+}
+```
 
 ---
 
