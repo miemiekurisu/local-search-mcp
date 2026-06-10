@@ -14,6 +14,7 @@ const KEPT_PAGE_TTL_MS = envInt('KEPT_PAGE_TTL_MS', 300000, 10000);
 const KEPT_PAGE_CLEANUP_INTERVAL_MS = envInt('KEPT_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
 const SESSION_PAGE_TTL_MS = envInt('SESSION_PAGE_TTL_MS', 600000, 60000);
 const SESSION_PAGE_CLEANUP_INTERVAL_MS = envInt('SESSION_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
+const PAGE_QUEUE_TIMEOUT_MS = envInt('PAGE_QUEUE_TIMEOUT_MS', 20000, 1000);
 
 const BROWSER_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -530,7 +531,18 @@ export class PlaywrightPool {
 
   async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false } = {}, fn) {
     if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
-      await new Promise(resolve => { this._pageWaiters.push(resolve); });
+      let waiterResolve;
+      const waitPromise = new Promise(resolve => { waiterResolve = resolve; this._pageWaiters.push(resolve); });
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(Object.assign(new Error(`page queue full after ${PAGE_QUEUE_TIMEOUT_MS}ms`), { code: 'PAGE_BUSY' })), PAGE_QUEUE_TIMEOUT_MS);
+      });
+      try {
+        await Promise.race([waitPromise, timeoutPromise]);
+      } catch (err) {
+        const idx = this._pageWaiters.indexOf(waiterResolve);
+        if (idx !== -1) this._pageWaiters.splice(idx, 1);
+        throw err;
+      }
     }
 
     this._activePageCount++;
