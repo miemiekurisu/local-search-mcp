@@ -379,17 +379,31 @@ mcpServer.connect(mcpTransport).catch(err => {
 });
 
 // SSE transport for remote MCP clients (opencode uses SSE for "type": "remote")
-const sseMcpServer = createMcpServer(kernel, browserPool);
+// Each SSE connection needs its own McpServer (SDK Protocol only supports one transport per instance)
+// plus a serialized send() to prevent SSE write interleaving under concurrency.
 const sseTransports = new Map();
 
 app.get('/sse', async (req, res) => {
   try {
     const transport = new SSEServerTransport('/messages', res);
     sseTransports.set(transport.sessionId, transport);
+
+    // Serialize send() to prevent SSE write interleaving from concurrent tool handlers
+    let sendQueue = Promise.resolve();
+    const origSend = transport.send.bind(transport);
+    transport.send = (message) => {
+      const task = sendQueue.then(() => origSend(message));
+      sendQueue = task.catch(() => {});
+      return task;
+    };
+
+    const server = createMcpServer(kernel, browserPool);
+    await server.connect(transport);
+
     res.on('close', () => {
       sseTransports.delete(transport.sessionId);
+      server.close().catch(() => {});
     });
-    await sseMcpServer.connect(transport);
   } catch (err) {
     console.error('[sse] connection error:', err);
     if (!res.headersSent) {
