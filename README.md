@@ -239,8 +239,18 @@ curl -s -X POST http://localhost:8765/mcp \
 | 端点 | 协议 | 适用客户端 | 说明 |
 |------|------|-----------|------|
 | `POST /mcp` | 自定义 JSON-RPC | 普通 HTTP 客户端（curl、浏览器） | 最早实现的端点，每个请求独立 HTTP 往返，无会话状态 |
-| `/* /mcp-stream` | Streamable HTTP | MCP SDK 标准客户端 | 遵循 MCP Streamable HTTP 规范，支持会话复用 |
+| `/* /mcp-stream` | Streamable HTTP | **ChatBox**、MCP SDK 标准客户端 | 遵循 MCP Streamable HTTP 规范（2025-11-25），每个会话独立 McpServer 实例 |
 | `GET /sse` + `POST /messages` | SSE 服务器推送 | **opencode remote** 类型客户端 | 基于 Server-Sent Events 的长连接，服务端主动推送结果 |
+
+**`/mcp-stream` Streamable HTTP 端点：**
+
+此端点遵循 MCP Streamable HTTP 规范，支持多会话并发：
+- 每个 `initialize` 请求创建一个独立的 `McpServer` + `StreamableHTTPServerTransport` 实例
+- 通过 `onsessioninitialized` 回调注册会话到会话表
+- 后续请求通过 `mcp-session-id` 头路由到对应会话
+- 支持 GET（SSE 流）、POST（JSON-RPC）、DELETE（会话终止）
+
+适用于任何支持 Streamable HTTP 的 MCP 客户端，如 **ChatBox**（设置 → MCP → 添加服务器 → 类型 `http`，URL `http://<server-ip>:8765/mcp-stream`）。
 
 **SSE 端点（`/sse`）的引入原因：**
 

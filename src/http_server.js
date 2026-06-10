@@ -7,6 +7,7 @@ import { createMcpServer } from './mcp/server.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 
 export function createApp(kernelOverride, browserPoolOverride) {
   const kernel = kernelOverride || createKernel().kernel;
@@ -362,15 +363,53 @@ export function createApp(kernelOverride, browserPoolOverride) {
     }
   });
 
-  // Also provide the stdio MCP server on a separate endpoint using StreamableHTTP
-  const mcpTransport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID()
-  });
+  // Streamable HTTP transport (MCP spec 2025-11-25)
+  // Each session gets its own transport + McpServer, registered by onsessioninitialized.
+  // This follows the SDK's simpleStreamableHttp.js pattern to support multiple clients
+  // (e.g. ChatBox uses StreamableHTTPClientTransport with SSE fallback).
+  const streamableSessions = new Map();
   app.all('/mcp-stream', async (req, res) => {
-    await mcpTransport.handleRequest(req, res, req.body);
-  });
-  mcpServer.connect(mcpTransport).catch(err => {
-    console.error('[mcp-http] streamable transport connect error:', err);
+    try {
+      const sessionId = req.headers['mcp-session-id'];
+      let transport;
+      if (sessionId && streamableSessions.has(sessionId)) {
+        transport = streamableSessions.get(sessionId);
+      } else if (!sessionId && req.method === 'POST' && isInitializeRequest(req.body)) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (sid) => {
+            console.log(`[mcp-stream] session initialized: ${sid}`);
+            streamableSessions.set(sid, transport);
+          }
+        });
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid && streamableSessions.has(sid)) {
+            console.log(`[mcp-stream] session closed: ${sid}`);
+            streamableSessions.delete(sid);
+          }
+        };
+        const server = createMcpServer(kernel, actualBrowserPool);
+        await server.connect(transport);
+      } else {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+          id: null
+        });
+        return;
+      }
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error('[mcp-stream] error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null
+        });
+      }
+    }
   });
 
   // SSE transport for remote MCP clients (opencode uses SSE for "type": "remote")
