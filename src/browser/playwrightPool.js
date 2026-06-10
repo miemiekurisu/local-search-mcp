@@ -400,6 +400,9 @@ export class PlaywrightPool {
 
   async getSearchContext() {
     const browser = await this.getBrowser();
+    if (this.connectedBrowser) {
+      return this.getSharedContext();
+    }
     if (this.searchContext) {
       try {
         this.searchContext.pages();
