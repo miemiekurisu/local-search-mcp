@@ -287,6 +287,11 @@ SSE 实现要点：
 }
 ```
 
+> **低性能设备（如 ARM 开发板）提示：** 若服务部署在 ARM 等低性能设备上，浏览器搜索（Google、Bing）可能耗时更长。
+> - opencode 侧 `timeout` 建议设为 180-300 秒
+> - 服务端可降低 `MAX_CONCURRENT_PAGES=1`（见 `.env.example`）
+> - 如有条件，建议将 MCP 服务部署到 x86_64 设备以获得更稳定的搜索性能
+
 ---
 
 ## noVNC 可视化浏览器
