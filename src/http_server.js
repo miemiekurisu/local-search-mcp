@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { registerOpenApiRoutes } from './openapi/routes.js';
 
 export function createApp(kernelOverride, browserPoolOverride) {
   const kernel = kernelOverride || createKernel().kernel;
@@ -126,6 +127,8 @@ export function createApp(kernelOverride, browserPoolOverride) {
   app.post('/search_and_fetch', asyncRoute(args => kernel.searchAndFetch(args)));
   app.post('/research_problem', asyncRoute(args => kernel.researchProblem(args)));
   app.post('/artifact', asyncRoute(args => kernel.getArtifact(args)));
+
+  registerOpenApiRoutes(app, kernel);
 
   // MCP over HTTP — custom JSON-RPC endpoint
   app.post('/mcp', async (req, res) => {
