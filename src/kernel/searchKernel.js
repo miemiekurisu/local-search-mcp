@@ -42,7 +42,7 @@ export class SearchKernel {
     };
     if (fetchTopK > 0 && search.results.length > 0) {
       const pool = search.results;
-      const perPageTimeout = 30000;
+      const perPageTimeout = 60000;
       const allFetched = await mapLimit(pool, CONFIG.maxFetchConcurrency, async (result) => {
         try {
           const proxyProfile = this.proxyRouter.resolveForEngine(result.engine, result.url).profile;
