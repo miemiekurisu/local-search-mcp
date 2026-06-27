@@ -125,6 +125,7 @@ export function buildOpenApiSpec(baseUrl) {
                         max_results_per_query: { type: 'integer', minimum: 1, maximum: 20, default: 5 },
                         max_pages: { type: 'integer', minimum: 1, maximum: 20, default: 5 },
                         max_chars_total: { type: 'integer', minimum: 5000, maximum: 200000, default: 50000 },
+                        timeout_ms: { type: 'integer', minimum: 60000, maximum: 600000, default: 300000, description: 'Total research timeout in ms (default 300000 = 5 min).' },
                       },
                     },
                     source_policy: {

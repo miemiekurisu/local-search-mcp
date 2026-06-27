@@ -147,7 +147,7 @@ export class SearchKernel {
     const queries = makeQueryFamilies(base, prefer).slice(0, maxQueries);
     const bundles = [];
     const failures = [];
-    const researchDeadline = Date.now() + 120000;
+    const researchDeadline = Date.now() + Number(budget.timeout_ms || 300000);
     for (const q of queries) {
       if (Date.now() > researchDeadline) {
         failures.push({ query: q, code: 'RESEARCH_TIMEOUT', message: 'Research total time limit exceeded' });
@@ -165,7 +165,7 @@ export class SearchKernel {
           }),
           new Promise((_, reject) => setTimeout(
             () => reject(Object.assign(new Error('Query timed out'), { code: 'QUERY_TIMEOUT' })),
-            Math.min(remaining, 60000)
+            Math.min(remaining, 120000)
           ))
         ]);
         bundles.push(b);
