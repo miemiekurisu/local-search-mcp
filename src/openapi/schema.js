@@ -12,7 +12,7 @@ export function buildOpenApiSpec(baseUrl) {
         post: {
           operationId: 'search_web',
           summary: 'Search the web and optionally fetch pages',
-          description: 'Search DuckDuckGo, Wikipedia, or browser engines (Google/Bing/ChatGPT). Returns search results with snippets. When fetch_top_k > 0, automatically fetches full text from top results.',
+          description: 'Search DuckDuckGo, Wikipedia, or browser engines (Google/Bing/ChatGPT). Returns search results with snippets. By default auto-fetches full text from top results (fetch_top_k=5). For additional pages beyond the default, call fetch_page on specific URLs from the results, or increase fetch_top_k.',
           requestBody: {
             required: true,
             content: {
@@ -24,7 +24,7 @@ export function buildOpenApiSpec(baseUrl) {
                     query: { type: 'string', description: 'Search query.' },
                     limit: { type: 'integer', minimum: 1, maximum: 20, default: 10, description: 'Max search results.' },
                     engines: { type: 'array', items: { type: 'string' }, description: 'Engine list: duckduckgo, wikipedia, google, bing, chatgpt.' },
-                    fetch_top_k: { type: 'integer', minimum: 0, maximum: 20, default: 0, description: 'Number of top results to fetch full text (0 = skip fetching).' },
+                    fetch_top_k: { type: 'integer', minimum: 0, maximum: 20, default: 5, description: 'Number of top results to fetch full text (0 = skip fetching). Default 5 fetches ~5 top pages.' },
                     fetch_mode: { type: 'string', enum: ['auto', 'http', 'browser'], default: 'auto', description: 'Fetch mode for full text extraction.' },
                     max_chars_total: { type: 'integer', minimum: 2000, maximum: 100000, default: 30000, description: 'Total character budget across all fetched pages.' },
                     proxy_profile: { type: 'string', description: 'Optional proxy profile name.' },
@@ -41,8 +41,8 @@ export function buildOpenApiSpec(baseUrl) {
       '/tools/fetch_page': {
         post: {
           operationId: 'fetch_page',
-          summary: 'Fetch a web page',
-          description: 'Fetch a URL and return extracted readable text. HTTP mode is tried first; falls back to browser rendering if HTTP fails (mode=auto).',
+          summary: 'Fetch a web page by URL',
+          description: 'Fetch a URL and return extracted readable text. Use this AFTER search_web to get the full content of specific result URLs. HTTP mode is tried first; falls back to browser rendering if HTTP fails (mode=auto).',
           requestBody: {
             required: true,
             content: {

@@ -25,7 +25,7 @@ export class SearchKernel {
       proxyProfile: args.proxy_profile || args.proxyProfile || 'auto',
       timeoutMs: args.timeout_ms || args.timeoutMs
     });
-    const fetchTopK = Math.min(search.results.length, Math.max(0, Number(args.fetch_top_k ?? args.fetchTopK ?? 0)));
+    const fetchTopK = Math.min(search.results.length, Math.max(0, Number(args.fetch_top_k ?? args.fetchTopK ?? 5)));
     const maxCharsTotal = Number(args.max_chars_total || args.maxCharsTotal || 30000);
     const query_id = 'q_' + crypto.createHash('sha1').update(query + Date.now()).digest('hex').slice(0, 12);
     const payload = {
