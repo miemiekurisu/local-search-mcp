@@ -25,7 +25,7 @@ export class SearchKernel {
       proxyProfile: args.proxy_profile || args.proxyProfile || 'auto',
       timeoutMs: args.timeout_ms || args.timeoutMs
     });
-    const fetchTopK = Math.min(search.results.length, Math.max(0, Number(args.fetch_top_k ?? args.fetchTopK ?? 10)));
+    const fetchTopK = Math.min(search.results.length, Math.max(0, Number(args.fetch_top_k ?? args.fetchTopK ?? 0)));
     const maxCharsTotal = Number(args.max_chars_total || args.maxCharsTotal || 30000);
     const query_id = 'q_' + crypto.createHash('sha1').update(query + Date.now()).digest('hex').slice(0, 12);
     const payload = {
@@ -107,7 +107,10 @@ export class SearchKernel {
 
   async searchAndFetch(args = {}) {
     const query = requiredString(args.query, 'query');
-    const search = await this.searchWeb(args);
+    const search = await this.searchWeb({
+      ...args,
+      fetch_top_k: args.fetch_top_k ?? args.fetchTopK ?? 3,
+    });
     const items = (search.fetched || []).map(f => ({
       title: f.title, url: f.url, host: f.host,
       snippet: f.snippet, engine: f.engine, rank: f.rank,

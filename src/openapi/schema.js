@@ -24,7 +24,7 @@ export function buildOpenApiSpec(baseUrl) {
                     query: { type: 'string', description: 'Search query.' },
                     limit: { type: 'integer', minimum: 1, maximum: 20, default: 10, description: 'Max search results.' },
                     engines: { type: 'array', items: { type: 'string' }, description: 'Engine list: duckduckgo, wikipedia, google, bing, chatgpt.' },
-                    fetch_top_k: { type: 'integer', minimum: 0, maximum: 20, default: 10, description: 'Number of top results to fetch full text (0 = skip fetching).' },
+                    fetch_top_k: { type: 'integer', minimum: 0, maximum: 20, default: 0, description: 'Number of top results to fetch full text (0 = skip fetching).' },
                     fetch_mode: { type: 'string', enum: ['auto', 'http', 'browser'], default: 'auto', description: 'Fetch mode for full text extraction.' },
                     max_chars_total: { type: 'integer', minimum: 2000, maximum: 100000, default: 30000, description: 'Total character budget across all fetched pages.' },
                     proxy_profile: { type: 'string', description: 'Optional proxy profile name.' },
