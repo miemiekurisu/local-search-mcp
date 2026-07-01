@@ -42,23 +42,22 @@ export class SearchKernel {
     };
     if (fetchTopK > 0 && search.results.length > 0) {
       const pool = search.results;
-      const perPageTimeout = 60000;
+      const deadline = Date.now() + 60000;
       const allFetched = await mapLimit(pool, CONFIG.maxFetchConcurrency, async (result) => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          return { result, page: null, status: 'failed', error: { code: 'FETCH_TIMEOUT', message: 'deadline exceeded before fetch started' } };
+        }
         try {
           const proxyProfile = this.proxyRouter.resolveForEngine(result.engine, result.url).profile;
-          const page = await Promise.race([
-            this.fetchPage({
-              url: result.url,
-              mode: args.fetch_mode || args.mode || 'auto',
-              proxy_profile: proxyProfile,
-              max_chars: Math.max(2000, Math.floor(maxCharsTotal / Math.max(1, fetchTopK))),
-              timeout_ms: args.timeout_ms || args.timeoutMs
-            }),
-            new Promise((_, reject) => setTimeout(
-              () => reject(Object.assign(new Error('fetch timed out'), { code: 'FETCH_TIMEOUT' })),
-              perPageTimeout
-            ))
-          ]);
+          const page = await this.fetchPage({
+            url: result.url,
+            mode: args.fetch_mode || args.mode || 'auto',
+            proxy_profile: proxyProfile,
+            max_chars: Math.max(2000, Math.floor(maxCharsTotal / Math.max(1, fetchTopK))),
+            timeout_ms: args.timeout_ms || args.timeoutMs,
+            deadline: deadline
+          });
           return { result, page, status: 'success' };
         } catch (err) {
           return { result, page: null, status: 'failed', error: { code: err.code || 'FETCH_ERROR', message: err.message } };

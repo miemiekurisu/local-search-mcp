@@ -34,12 +34,17 @@ export class PageFetcher {
       }
     }
     if (mode === 'browser' || mode === 'auto') {
-      try {
-        const result = await this.fetchBrowser(url, { maxChars, proxyProfile, timeoutMs: opts.timeout_ms || opts.timeoutMs });
-        attempts.push(result.attempt);
-        return { ...result, attempts };
-      } catch (err) {
-        attempts.push({ mode: 'browser', status: 'failed', code: err.code || 'BROWSER_FETCH_ERROR', message: err.message });
+      const remainingForBrowser = opts.deadline ? Math.max(0, opts.deadline - Date.now()) : Infinity;
+      if (remainingForBrowser < 5000) {
+        attempts.push({ mode: 'browser', status: 'skipped', code: 'DEADLINE_EXCEEDED', message: 'browser fallback skipped — deadline exceeded' });
+      } else {
+        try {
+          const result = await this.fetchBrowser(url, { maxChars, proxyProfile, timeoutMs: Math.min(remainingForBrowser, opts.timeout_ms || opts.timeoutMs || CONFIG.browserTimeoutMs) });
+          attempts.push(result.attempt);
+          return { ...result, attempts };
+        } catch (err) {
+          attempts.push({ mode: 'browser', status: 'failed', code: err.code || 'BROWSER_FETCH_ERROR', message: err.message });
+        }
       }
     }
     return {
