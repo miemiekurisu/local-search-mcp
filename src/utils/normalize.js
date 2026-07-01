@@ -65,7 +65,13 @@ export function isLikelyBlockedText(text) {
     t.includes('too many requests') ||
     t.includes('temporarily unavailable') ||
     t.includes('robot check') ||
-    t.includes('are you a robot');
+    t.includes('are you a robot') ||
+    t.includes('anubis') ||
+    t.includes('proof-of-work') ||
+    t.includes('making sure you\'re not a bot') ||
+    t.includes('you are seeing this because') ||
+    t.includes('please prove you are human') ||
+    t.includes('enable javascript');
 }
 
 export function uniqueByUrl(items, limit = 20) {
