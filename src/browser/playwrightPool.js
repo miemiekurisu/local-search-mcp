@@ -595,6 +595,12 @@ export class PlaywrightPool {
             if (this._keptPages.size > 3) this._cleanupKeptPages();
           }
         } else {
+          // Navigate to about:blank to stop all JS execution and abort any
+          // in-flight requests before closing. This prevents hangs from
+          // beforeunload dialogs (Playwright #11581), stalled route handlers
+          // (#6317), and pages with websockets/long-polling/SSE that keep
+          // the browser spinner active (network never reaches "idle").
+          await page.goto('about:blank', { waitUntil: 'domcontentloaded' }).catch(() => {});
           await page.close().catch(() => {});
           if (ownsContext) {
             await context.close().catch(() => {});
@@ -640,7 +646,7 @@ export class PlaywrightPool {
       page = await context.newPage();
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
       await stealthPlugin(page);
-      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort());
+      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort().catch(() => {}));
       pageEntry = { page, lastAccessedAt: Date.now() };
       this.sessionPages.set(sessionKey, pageEntry);
     } else {

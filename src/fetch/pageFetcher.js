@@ -137,7 +137,7 @@ export class PageFetcher {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
     return await this.browserPool.withPage({ proxyProfile, url }, async (page) => {
       // Block slow, content-free resources — text extraction doesn't need them
-      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico|avif|woff2?|eot|ttf|otf|mp4|webm|mp3|mpeg)(\?|$)/i, route => route.abort());
+      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico|avif|woff2?|eot|ttf|otf|mp4|webm|mp3|mpeg)(\?|$)/i, route => route.abort().catch(() => {}));
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs || CONFIG.browserTimeoutMs });
       // Wait for meaningful text content to appear (JS-rendered pages)
       try {
