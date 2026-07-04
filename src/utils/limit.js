@@ -6,16 +6,19 @@ export async function mapLimit(items, concurrency, fn, { timeoutMs } = {}) {
       const i = next++;
       if (i >= items.length) break;
       if (timeoutMs) {
-        results[i] = await Promise.race([
-          fn(items[i], i),
-          new Promise((_, reject) => {
-            const id = setTimeout(
-              () => reject(Object.assign(new Error(`mapLimit item timed out after ${timeoutMs}ms`), { code: 'MAP_LIMIT_TIMEOUT' })),
-              timeoutMs
-            );
-            if (typeof id.unref === 'function') id.unref();
-          })
-        ]);
+        let timerId;
+        const timeoutPromise = new Promise((_, reject) => {
+          timerId = setTimeout(
+            () => reject(Object.assign(new Error(`mapLimit item timed out after ${timeoutMs}ms`), { code: 'MAP_LIMIT_TIMEOUT' })),
+            timeoutMs
+          );
+          if (typeof timerId?.unref === 'function') timerId.unref();
+        });
+        try {
+          results[i] = await Promise.race([fn(items[i], i), timeoutPromise]);
+        } finally {
+          clearTimeout(timerId);
+        }
       } else {
         results[i] = await fn(items[i], i);
       }

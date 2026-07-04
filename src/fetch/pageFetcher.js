@@ -101,13 +101,20 @@ export class PageFetcher {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
     const resp = await fetchWithTimeout(url, { timeoutMs: timeoutMs || CONFIG.defaultTimeoutMs, proxyUrl: proxy.proxyUrl });
     const ct = contentTypeOf(resp);
+    let bodyTimerId;
     const raw = await Promise.race([
       resp.text(),
-      new Promise((_, reject) => setTimeout(
-        () => reject(Object.assign(new Error('body read timed out'), { code: 'BODY_TIMEOUT' })),
-        30000
-      ))
+      new Promise((_, reject) => {
+        bodyTimerId = setTimeout(() => {
+          if (resp.body && typeof resp.body.cancel === 'function') {
+            resp.body.cancel().catch(() => {});
+          }
+          reject(Object.assign(new Error('body read timed out'), { code: 'BODY_TIMEOUT' }));
+        }, 30000);
+        if (typeof bodyTimerId?.unref === 'function') bodyTimerId.unref();
+      })
     ]);
+    clearTimeout(bodyTimerId);
     if (!resp.ok) return this.failure(url, 'http', `HTTP_${resp.status}`, `HTTP ${resp.status}`, proxy.profile);
     if (isLikelyBlockedText(raw)) return this.failure(url, 'http', 'PAGE_BLOCKED_OR_CAPTCHA', 'page appears blocked/captcha', proxy.profile);
     if (raw.includes('正在安全验证') || raw.includes('security verification') || raw.includes('Cloudflare')) {

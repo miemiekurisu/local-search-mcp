@@ -370,19 +370,39 @@ export function createApp(kernelOverride, browserPoolOverride) {
   // Each session gets its own transport + McpServer, registered by onsessioninitialized.
   // This follows the SDK's simpleStreamableHttp.js pattern to support multiple clients
   // (e.g. ChatBox uses StreamableHTTPClientTransport with SSE fallback).
+  const MAX_STREAMABLE_SESSIONS = 500;
+  const SESSION_TTL_MS = 3600000;
   const streamableSessions = new Map();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [sid, entry] of streamableSessions) {
+      if (now - entry.createdAt > SESSION_TTL_MS) {
+        console.log(`[mcp-stream] evicting stale session: ${sid}`);
+        streamableSessions.delete(sid);
+        entry.transport.close().catch(() => {});
+      }
+    }
+  }, 60000).unref();
   app.all('/mcp-stream', async (req, res) => {
     try {
       const sessionId = req.headers['mcp-session-id'];
       let transport;
       if (sessionId && streamableSessions.has(sessionId)) {
-        transport = streamableSessions.get(sessionId);
+        transport = streamableSessions.get(sessionId).transport;
       } else if (!sessionId && req.method === 'POST' && isInitializeRequest(req.body)) {
+        if (streamableSessions.size >= MAX_STREAMABLE_SESSIONS) {
+          const oldest = streamableSessions.entries().next().value;
+          if (oldest) {
+            console.log(`[mcp-stream] evicting oldest session: ${oldest[0]}`);
+            streamableSessions.delete(oldest[0]);
+            oldest[1].transport.close().catch(() => {});
+          }
+        }
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid) => {
             console.log(`[mcp-stream] session initialized: ${sid}`);
-            streamableSessions.set(sid, transport);
+            streamableSessions.set(sid, { transport, createdAt: Date.now() });
           }
         });
         transport.onclose = () => {
@@ -418,12 +438,30 @@ export function createApp(kernelOverride, browserPoolOverride) {
   // SSE transport for remote MCP clients (opencode uses SSE for "type": "remote")
   // Each SSE connection needs its own McpServer (SDK Protocol only supports one transport per instance)
   // plus a serialized send() to prevent SSE write interleaving under concurrency.
+  const MAX_SSE_TRANSPORTS = 500;
   const sseTransports = new Map();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [sid, entry] of sseTransports) {
+      if (now - entry.createdAt > SESSION_TTL_MS) {
+        console.log(`[sse] evicting stale session: ${sid}`);
+        sseTransports.delete(sid);
+        entry.server.close().catch(() => {});
+      }
+    }
+  }, 60000).unref();
 
   app.get('/sse', async (req, res) => {
     try {
       const transport = new SSEServerTransport('/messages', res);
-      sseTransports.set(transport.sessionId, transport);
+      if (sseTransports.size >= MAX_SSE_TRANSPORTS) {
+        const oldest = sseTransports.entries().next().value;
+        if (oldest) {
+          console.log(`[sse] evicting oldest transport: ${oldest[0]}`);
+          sseTransports.delete(oldest[0]);
+          oldest[1].server.close().catch(() => {});
+        }
+      }
 
       // Serialize send() to prevent SSE write interleaving from concurrent tool handlers
       let sendQueue = Promise.resolve();
@@ -436,6 +474,8 @@ export function createApp(kernelOverride, browserPoolOverride) {
 
       const server = createMcpServer(kernel, actualBrowserPool);
       await server.connect(transport);
+
+      sseTransports.set(transport.sessionId, { transport, server, createdAt: Date.now() });
 
       res.on('close', () => {
         sseTransports.delete(transport.sessionId);

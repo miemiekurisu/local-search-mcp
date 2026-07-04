@@ -117,7 +117,9 @@ function getBlockedDomains() {
         return blockedDomains;
       }
     }
-  } catch {}
+    } catch (err) {
+      console.error(`[normalize] failed to load blocked domains config: ${err.message}`);
+    }
   blockedDomains = DEFAULT_BLOCKED_DOMAINS;
   return blockedDomains;
 }

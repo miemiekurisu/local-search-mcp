@@ -530,6 +530,7 @@ export class PlaywrightPool {
   }
 
   async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false } = {}, fn) {
+    let pageAcquired = false;
     if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
       let waiterResolve;
       const waitPromise = new Promise(resolve => { waiterResolve = resolve; this._pageWaiters.push(resolve); });
@@ -546,6 +547,7 @@ export class PlaywrightPool {
     }
 
     this._activePageCount++;
+    pageAcquired = true;
     let context;
     let ownsContext = false;
     let page = null;
@@ -600,7 +602,7 @@ export class PlaywrightPool {
         }
       }
     } finally {
-      this._activePageCount--;
+      if (pageAcquired) this._activePageCount--;
       if (this._pageWaiters.length > 0) {
         const next = this._pageWaiters.shift();
         next();
