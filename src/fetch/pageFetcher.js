@@ -136,13 +136,18 @@ export class PageFetcher {
   async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs } = {}) {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
     return await this.browserPool.withPage({ proxyProfile, url }, async (page) => {
+      // Block slow, content-free resources — text extraction doesn't need them
+      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico|avif|woff2?|eot|ttf|otf|mp4|webm|mp3|mpeg)(\?|$)/i, route => route.abort());
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs || CONFIG.browserTimeoutMs });
+      // Wait for meaningful text content to appear (JS-rendered pages)
       try {
-        await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs || CONFIG.browserTimeoutMs });
-      } catch (e) {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs || CONFIG.browserTimeoutMs });
-        await page.waitForTimeout(3000);
+        await page.waitForFunction(
+          () => (document.body?.innerText || '').trim().length > 80,
+          { timeout: Math.min(timeoutMs || CONFIG.browserTimeoutMs, 15000) }
+        );
+      } catch {
+        // content may still be sufficient; proceed
       }
-      await page.waitForTimeout(2000);
       let text = await page.evaluate(() => document.body ? document.body.innerText : '');
       const title = await page.title().catch(() => '');
       text = normalizeWhitespace(text);
