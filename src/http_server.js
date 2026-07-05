@@ -491,11 +491,11 @@ export function createApp(kernelOverride, browserPoolOverride) {
 
   app.post('/messages', async (req, res) => {
     const sessionId = req.query.sessionId;
-    const transport = sseTransports.get(sessionId);
-    if (!transport) {
+    const entry = sseTransports.get(sessionId);
+    if (!entry) {
       return res.status(404).end('Session not found');
     }
-    await transport.handlePostMessage(req, res, req.body);
+    await entry.transport.handlePostMessage(req, res, req.body);
   });
 
   return { app, kernel, browserPool: actualBrowserPool, mcpServer, sseTransports };
