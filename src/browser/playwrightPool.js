@@ -532,17 +532,22 @@ export class PlaywrightPool {
   async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false } = {}, fn) {
     let pageAcquired = false;
     if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
-      let waiterResolve;
-      const waitPromise = new Promise(resolve => { waiterResolve = resolve; this._pageWaiters.push(resolve); });
+      let waiterResolve, waiterReject;
+      let timeoutTimerId;
+      const waitPromise = new Promise((resolve, reject) => { waiterResolve = resolve; waiterReject = reject; this._pageWaiters.push({ resolve: waiterResolve, reject: waiterReject }); });
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(Object.assign(new Error(`page queue full after ${PAGE_QUEUE_TIMEOUT_MS}ms`), { code: 'PAGE_BUSY' })), PAGE_QUEUE_TIMEOUT_MS);
+        timeoutTimerId = setTimeout(() => reject(Object.assign(new Error(`page queue full after ${PAGE_QUEUE_TIMEOUT_MS}ms`), { code: 'PAGE_BUSY' })), PAGE_QUEUE_TIMEOUT_MS);
+        if (timeoutTimerId?.unref) timeoutTimerId.unref();
       });
       try {
         await Promise.race([waitPromise, timeoutPromise]);
       } catch (err) {
-        const idx = this._pageWaiters.indexOf(waiterResolve);
+        clearTimeout(timeoutTimerId);
+        const idx = this._pageWaiters.findIndex(w => w.resolve === waiterResolve);
         if (idx !== -1) this._pageWaiters.splice(idx, 1);
         throw err;
+      } finally {
+        clearTimeout(timeoutTimerId);
       }
     }
 
@@ -611,7 +616,7 @@ export class PlaywrightPool {
       if (pageAcquired) this._activePageCount--;
       if (this._pageWaiters.length > 0) {
         const next = this._pageWaiters.shift();
-        next();
+        next.resolve();
       }
     }
   }
@@ -727,8 +732,8 @@ export class PlaywrightPool {
   async close() {
     clearInterval(this._keptPagesCleanupTimer);
     clearInterval(this._sessionPagesCleanupTimer);
-    for (const resolve of this._pageWaiters) {
-      resolve();
+    for (const waiter of this._pageWaiters) {
+      waiter.reject(Object.assign(new Error('browser pool shutting down'), { code: 'SHUTDOWN' }));
     }
     this._pageWaiters = [];
     await this._resetKeptPages();

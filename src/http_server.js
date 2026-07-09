@@ -35,7 +35,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
   }, 60000).unref();
 
   function rateLimiter(req, res, next) {
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
     let entry = rateLimitMap.get(ip);
     if (!entry || now - entry.windowStart > CONFIG.rateLimitWindowMs) {
@@ -76,6 +76,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
   }
 
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '2mb' }));
   app.use(rateLimiter);
 
@@ -463,11 +464,17 @@ export function createApp(kernelOverride, browserPoolOverride) {
         }
       }
 
-      // Serialize send() to prevent SSE write interleaving from concurrent tool handlers
+      // Serialize send() to prevent SSE write interleaving from concurrent tool handlers.
+      // Add a timeout guard so a stalled connection doesn't freeze the queue forever.
       let sendQueue = Promise.resolve();
       const origSend = transport.send.bind(transport);
       transport.send = (message) => {
-        const task = sendQueue.then(() => origSend(message));
+        const task = sendQueue.then(() => {
+          const timeout = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('send timeout')), 10000)
+          );
+          return Promise.race([origSend(message), timeout]);
+        });
         sendQueue = task.catch(() => {});
         return task;
       };
@@ -495,7 +502,14 @@ export function createApp(kernelOverride, browserPoolOverride) {
     if (!entry) {
       return res.status(404).end('Session not found');
     }
-    await entry.transport.handlePostMessage(req, res, req.body);
+    try {
+      await entry.transport.handlePostMessage(req, res, req.body);
+    } catch (err) {
+      console.error('[sse] handlePostMessage error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).end('Internal error');
+      }
+    }
   });
 
   return { app, kernel, browserPool: actualBrowserPool, mcpServer, sseTransports };
