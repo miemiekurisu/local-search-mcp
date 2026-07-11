@@ -167,9 +167,10 @@ export class PageFetcher {
     }
     try {
       const { PDFParse } = await import('pdf-parse');
-      const pdf = new PDFParse({ url: new Uint8Array(buffer), verbosity: 0 });
+      const pdf = new PDFParse({ data: buffer, verbosity: 0 });
       await pdf.load();
-      const text = (await pdf.getText()) || '';
+      const textResult = await pdf.getText();
+      const text = (typeof textResult === 'string' ? textResult : (textResult?.text || '')) || '';
       const info = await pdf.getInfo().catch(() => ({}));
       const cleaned = text.trim();
       if (!cleaned || cleaned.length < 20) {
