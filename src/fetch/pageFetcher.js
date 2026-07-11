@@ -166,19 +166,23 @@ export class PageFetcher {
       return this.failure(url, 'http', 'INVALID_PDF', 'file does not appear to be a valid PDF', proxy);
     }
     try {
-      const pdfParse = (await import('pdf-parse')).default;
-      const data = await pdfParse(buffer);
-      const text = (data.text || '').trim();
-      if (!text || text.length < 20) {
+      const { PDFParse } = await import('pdf-parse');
+      const pdf = new PDFParse({ url: new Uint8Array(buffer), verbosity: 0 });
+      await pdf.load();
+      const text = (await pdf.getText()) || '';
+      const info = await pdf.getInfo().catch(() => ({}));
+      const cleaned = text.trim();
+      if (!cleaned || cleaned.length < 20) {
         return this.failure(url, 'http', 'PDF_EXTRACTION_EMPTY', 'no text extracted from PDF (may be scanned images)', proxy);
       }
-      const title = data.info?.Title || this._extractTitleFromUrl(url);
-      const truncated = truncateText(normalizeWhitespace(text), maxChars || 12000);
+      const numpages = info?.NPages || info?.Pages || pdf.doc?.pages?.length || 1;
+      const title = info?.Title || this._extractTitleFromUrl(url);
+      const truncated = truncateText(normalizeWhitespace(cleaned), maxChars || 12000);
       const artifact_ref = this.artifactStore.writeText('pages', truncated, { url, title, fetch_mode: 'pdf', content_type: 'application/pdf', proxy_profile: proxy });
       return {
-        status: 'success', url, title: normalizeWhitespace(title), text_preview: truncateText(text, Math.min(maxChars || 12000, 2500)),
-        text_chars: text.length, artifact_ref, fetch_mode: 'pdf', pdf_pages: data.numpages || 0,
-        attempt: { mode: 'http', status: 'success', proxy_profile: proxy, content_type: 'application/pdf', pdf_pages: data.numpages || 0 }
+        status: 'success', url, title: normalizeWhitespace(title), text_preview: truncateText(cleaned, Math.min(maxChars || 12000, 2500)),
+        text_chars: cleaned.length, artifact_ref, fetch_mode: 'pdf', pdf_pages: numpages,
+        attempt: { mode: 'http', status: 'success', proxy_profile: proxy, content_type: 'application/pdf', pdf_pages: numpages }
       };
     } catch (err) {
       return this.failure(url, 'http', 'PDF_PARSE_ERROR', `failed to parse PDF: ${err.message}`, proxy);
