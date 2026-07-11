@@ -22,10 +22,11 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
         '  - To use Google, Bing, or ChatGPT, add them to engines[] explicitly.',
         '  - Browser-dependent engines require prior login via the noVNC browser.',
         '  - The browser is automatically closed after each query. It only stays open when CAPTCHA/manual intervention is needed.',
-        '  - Use fetch_page to extract clean text from any URL.',
-        '  - Use search_and_fetch to combine both in one call.',
+        '  - Use fetch_page to extract clean text from any URL. Supports HTML pages (mode:"auto" falls back to Playwright for JS-rendered sites like mp.weixin.qq.com) and PDF files (automatic text extraction).',
+        '  - Use search_and_fetch to combine search and page fetching in one call.',
         '  - Use research_problem for multi-query deep research.',
-        '  - Use get_artifact or artifact:// resources to read stored results.',
+        '  - Tools return artifact_ref values (e.g. artifact://pages/xxx.txt). Use get_artifact to read them in chunks with offset/limit.',
+        '  - Use engine_status to check which search engines and proxies are available.',
       ].join('\n')
     }
   );
@@ -88,11 +89,13 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
 
   server.registerTool('search_web', {
     title: 'Search the Web',
-    description: 'Search DuckDuckGo, Wikipedia, or custom HTML engines. Returns up to 20 search results with snippets. To use Google/Bing/ChatGPT, specify them explicitly in engines[] — they require prior login via noVNC (http://localhost:6082). No paid API required.',
+    description: 'Search DuckDuckGo, Wikipedia, or custom HTML engines. Returns up to 20 search results with snippets. Can optionally auto-fetch full text from top results via fetch_top_k. To use Google/Bing/ChatGPT, specify them explicitly in engines[] — they require prior login via noVNC (http://localhost:6082). No paid API required.',
     inputSchema: {
       query: z.string().min(1).describe('Search query'),
       limit: z.number().int().min(1).max(20).optional().describe('Max results (default: 10, max: 20)'),
       engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (HTTP, no login). Add "google", "bing", or "chatgpt" explicitly if logged in.'),
+      fetch_top_k: z.number().int().min(0).max(20).optional().describe('Number of top results to auto-fetch full text (0 = skip fetching). Default 0. Use search_and_fetch for fetching with results.'),
+      fetch_mode: z.enum(['auto', 'http', 'browser']).optional().describe('Fetch mode for full text extraction when fetch_top_k > 0. auto=try HTTP then browser fallback.'),
       proxy_profile: z.string().optional().describe('Proxy profile name (default: "auto")')
     }
   }, wrapHandler(async (args) => {
@@ -103,10 +106,10 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
 
   server.registerTool('fetch_page', {
     title: 'Fetch a Web Page',
-    description: 'Fetch a URL and return extracted plain text. Falls back to Playwright browser if HTTP fetch fails. Results stored as artifact for chunked reading.',
+    description: 'Fetch a URL and return extracted plain text. Supports: (1) HTML pages via HTTP or Playwright browser fallback for JS-rendered sites like mp.weixin.qq.com and SPAs; (2) PDF files — automatically extracts text using pdf-parse. Results stored as artifact for chunked reading via get_artifact.',
     inputSchema: {
       url: z.string().url().describe('URL to fetch'),
-      mode: z.enum(['auto', 'http', 'browser']).optional().describe('Fetch mode: auto (try http then browser), http, or browser'),
+      mode: z.enum(['auto', 'http', 'browser']).optional().describe('Fetch mode: auto (try http then browser), http, or browser. For PDF files, HTTP mode is used automatically.'),
       proxy_profile: z.string().optional().describe('Proxy profile name'),
       max_chars: z.number().int().min(1000).max(100000).optional().describe('Max characters to extract')
     }
@@ -145,7 +148,8 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
         max_queries: z.number().int().min(1).max(6).optional(),
         max_results_per_query: z.number().int().min(1).max(20).optional(),
         max_pages: z.number().int().min(1).max(20).optional(),
-        max_chars_total: z.number().int().min(5000).max(200000).optional()
+        max_chars_total: z.number().int().min(5000).max(200000).optional(),
+        timeout_ms: z.number().int().min(30000).max(300000).optional().describe('Overall research timeout in ms (default: 300000 / 5 min)')
       }).optional().describe('Research budget controls'),
       source_policy: z.object({
         prefer: z.array(z.string()).optional(),
@@ -158,11 +162,11 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
 
   server.registerTool('get_artifact', {
     title: 'Read Artifact',
-    description: 'Read a stored artifact (search results, fetched page, bundle) in bounded chunks. Use the artifact_ref returned by other tools.',
+    description: 'Read a stored artifact (search results, fetched page, evidence bundle) in bounded chunks. Use the artifact_ref value returned by search_web, fetch_page, search_and_fetch, or research_problem. Read large results incrementally with offset/limit.',
     inputSchema: {
-      artifact_ref: z.string().describe('Artifact reference (e.g. artifact://search/search_xxx.txt)'),
-      offset: z.number().int().min(0).optional().describe('Byte offset to start reading from'),
-      limit: z.number().int().min(1).max(100000).optional().describe('Max bytes to read (default: 8000)')
+      artifact_ref: z.string().describe('Artifact reference (e.g. artifact://search/search_xxx.txt) — returned in tool output as artifact_ref'),
+      offset: z.number().int().min(0).optional().describe('Byte offset to start reading from (default: 0)'),
+      limit: z.number().int().min(1).max(100000).optional().describe('Max bytes to read (default: 8000). Increase for longer reads.')
     }
   }, wrapHandler(async (args) => {
     return jsonContent(kernel.getArtifact(args));
@@ -170,9 +174,9 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
 
   server.registerTool('get_weather', {
     title: 'Get Weather',
-    description: 'Get current weather and forecast for a location using Open-Meteo API. Free, no API key needed. Returns current conditions, 7-day forecast, and hourly forecast.',
+    description: 'Get current weather and forecast for a location using Open-Meteo API (free, no API key). Supports Chinese city names (e.g. 北京). Returns current conditions, 7-day forecast, and hourly forecast.',
     inputSchema: {
-      location: z.string().min(1).describe('City name or location, e.g. "Beijing", "Tokyo", "Shanghai"')
+      location: z.string().min(1).describe('City name or location, e.g. "Beijing", "北京", "Tokyo", "Shanghai"')
     }
   }, wrapHandler(async (args) => {
     const { searchWeather } = await import('../tools/weather.js');

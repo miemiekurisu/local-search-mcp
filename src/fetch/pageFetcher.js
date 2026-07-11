@@ -23,6 +23,7 @@ export class PageFetcher {
     const mode = opts.mode || 'auto';
     const maxChars = Number(opts.max_chars || opts.maxChars || 12000);
     const proxyProfile = opts.proxy_profile || opts.proxyProfile || 'auto';
+    const isPdfUrl = url.split('?')[0].toLowerCase().endsWith('.pdf');
     const attempts = [];
     if (mode === 'http' || mode === 'auto') {
       try {
@@ -32,6 +33,15 @@ export class PageFetcher {
       } catch (err) {
         attempts.push({ mode: 'http', status: 'failed', code: err.code || 'HTTP_FETCH_ERROR', message: err.message });
       }
+    }
+    // Skip browser fallback for PDF URLs — browser can't extract PDF text
+    if (isPdfUrl && attempts.length > 0 && attempts.at(-1)?.status !== 'success') {
+      return {
+        status: 'failed', url, title: '', text_preview: '', text_chars: 0,
+        artifact_ref: null, fetch_mode: mode,
+        failure_code: attempts.at(-1)?.code || 'FETCH_FAILED',
+        attempts
+      };
     }
     if (mode === 'browser' || mode === 'auto') {
       const remainingForBrowser = opts.deadline ? Math.max(0, opts.deadline - Date.now()) : Infinity;
@@ -101,6 +111,14 @@ export class PageFetcher {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
     const resp = await fetchWithTimeout(url, { timeoutMs: timeoutMs || CONFIG.defaultTimeoutMs, proxyUrl: proxy.proxyUrl });
     const ct = contentTypeOf(resp);
+    if (!resp.ok) return this.failure(url, 'http', `HTTP_${resp.status}`, `HTTP ${resp.status}`, proxy.profile);
+
+    // Handle PDF: read as binary buffer and extract text
+    const isPdf = ct === 'application/pdf' || (url.split('?')[0].toLowerCase().endsWith('.pdf') && ct.includes('octet-stream'));
+    if (isPdf) {
+      return await this.fetchPdf(url, resp, { maxChars, proxy: proxy.profile });
+    }
+
     let bodyTimerId;
     const raw = await Promise.race([
       resp.text(),
@@ -115,7 +133,6 @@ export class PageFetcher {
       })
     ]);
     clearTimeout(bodyTimerId);
-    if (!resp.ok) return this.failure(url, 'http', `HTTP_${resp.status}`, `HTTP ${resp.status}`, proxy.profile);
     if (isLikelyBlockedText(raw)) return this.failure(url, 'http', 'PAGE_BLOCKED_OR_CAPTCHA', 'page appears blocked/captcha', proxy.profile);
     if (raw.includes('正在安全验证') || raw.includes('security verification') || raw.includes('Cloudflare')) {
       return this.failure(url, 'http', 'PAGE_BLOCKED_OR_CAPTCHA', 'page shows security check', proxy.profile);
@@ -131,6 +148,51 @@ export class PageFetcher {
       text_chars: extracted.extracted_chars, artifact_ref, fetch_mode: 'http',
       attempt: { mode: 'http', status: 'success', proxy_profile: proxy.profile, content_type: ct }
     };
+  }
+
+  async fetchPdf(url, resp, { maxChars, proxy } = {}) {
+    const MAX_PDF_BYTES = 50 * 1024 * 1024;
+    const chunks = [];
+    let totalBytes = 0;
+    for await (const chunk of resp.body) {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_PDF_BYTES) {
+        return this.failure(url, 'http', 'PDF_TOO_LARGE', `PDF exceeds ${MAX_PDF_BYTES} bytes`, proxy);
+      }
+      chunks.push(chunk);
+    }
+    const buffer = Buffer.concat(chunks);
+    if (buffer.length < 5 || !buffer.slice(0, 5).toString().startsWith('%PDF')) {
+      return this.failure(url, 'http', 'INVALID_PDF', 'file does not appear to be a valid PDF', proxy);
+    }
+    try {
+      const pdfParse = (await import('pdf-parse')).default;
+      const data = await pdfParse(buffer);
+      const text = (data.text || '').trim();
+      if (!text || text.length < 20) {
+        return this.failure(url, 'http', 'PDF_EXTRACTION_EMPTY', 'no text extracted from PDF (may be scanned images)', proxy);
+      }
+      const title = data.info?.Title || this._extractTitleFromUrl(url);
+      const truncated = truncateText(normalizeWhitespace(text), maxChars || 12000);
+      const artifact_ref = this.artifactStore.writeText('pages', truncated, { url, title, fetch_mode: 'pdf', content_type: 'application/pdf', proxy_profile: proxy });
+      return {
+        status: 'success', url, title: normalizeWhitespace(title), text_preview: truncateText(text, Math.min(maxChars || 12000, 2500)),
+        text_chars: text.length, artifact_ref, fetch_mode: 'pdf', pdf_pages: data.numpages || 0,
+        attempt: { mode: 'http', status: 'success', proxy_profile: proxy, content_type: 'application/pdf', pdf_pages: data.numpages || 0 }
+      };
+    } catch (err) {
+      return this.failure(url, 'http', 'PDF_PARSE_ERROR', `failed to parse PDF: ${err.message}`, proxy);
+    }
+  }
+
+  _extractTitleFromUrl(url) {
+    try {
+      const u = new URL(url);
+      let basename = u.pathname.split('/').pop() || '';
+      basename = basename.replace('.pdf', '').replace(/[-_]/g, ' ');
+      if (basename.length > 0) return basename;
+    } catch { /* ignore */ }
+    return '';
   }
 
   async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs } = {}) {

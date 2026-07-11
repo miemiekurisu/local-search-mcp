@@ -42,7 +42,7 @@ export function buildOpenApiSpec(baseUrl) {
         post: {
           operationId: 'fetch_page',
           summary: 'Fetch a web page by URL',
-          description: 'Fetch a URL and return extracted readable text. Use this AFTER search_web to get the full content of specific result URLs. HTTP mode is tried first; falls back to browser rendering if HTTP fails (mode=auto).',
+          description: 'Fetch a URL and return extracted readable text. Supports HTML pages (HTTP mode, with browser fallback for JS-rendered sites like mp.weixin.qq.com) and PDF files (automatic text extraction). Use this AFTER search_web to get the full content of specific result URLs.',
           requestBody: {
             required: true,
             content: {
@@ -69,7 +69,7 @@ export function buildOpenApiSpec(baseUrl) {
         post: {
           operationId: 'search_and_fetch',
           summary: 'Search and bundle fetched pages as evidence',
-          description: 'Combines searchWeb + fetchPage into a single evidence bundle. Returns structured items with title, url, snippet, text_preview per result. If you already use searchWeb with fetch_top_k, this is redundant.',
+          description: 'Combines search + fetch into a single evidence bundle. Returns structured items with title, url, snippet, text_preview per result. Unlike search_web, always fetches pages and returns structured evidence.',
           requestBody: {
             required: true,
             content: {
