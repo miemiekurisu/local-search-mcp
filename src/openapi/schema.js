@@ -149,7 +149,7 @@ export function buildOpenApiSpec(baseUrl) {
         post: {
           operationId: 'get_weather',
           summary: 'Get weather forecast',
-          description: 'Get current weather and 7-day forecast for a city or location. Uses Open-Meteo API (free, no key needed). Supports Chinese city names (auto pinyin conversion) and international cities.',
+          description: 'Get current conditions and 7-day forecast for a location (Open-Meteo API, free, no key needed). Input formats: city name ("Beijing", "北京"), "City, Country" ("London, UK", "上海, 中国"), Chinese districts/landmarks (成都武侯区, 上海人民广场, 三林镇), or coordinates ("51.51, -0.13"). When a name matches several places, the tool automatically picks the most likely one; only when the candidates are truly ambiguous does it return a numbered list with coordinates — then re-call with a more specific name or the exact coordinates. Examples: "Beijing" → direct forecast; "London" → auto-picks London, UK; "Portland, Oregon" → resolves directly; "51.51, -0.13" → forecast at coordinates.',
           requestBody: {
             required: true,
             content: {
@@ -158,7 +158,7 @@ export function buildOpenApiSpec(baseUrl) {
                   type: 'object',
                   additionalProperties: false,
                   properties: {
-                    location: { type: 'string', description: 'City or location name, e.g. "Beijing", "Tokyo", "上海".' },
+                    location: { type: 'string', description: 'Location: city name ("Beijing", "北京"), "City, Country" ("London, UK", "上海, 中国"), or coordinates ("51.51, -0.13"). If a previous call returned a location options list, use the coordinates or a more specific name from it. Use the user\'s context (country, language, or region mentioned in the conversation) to pick the format.' },
                   },
                   required: ['location'],
                 },

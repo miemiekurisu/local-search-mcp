@@ -30,6 +30,70 @@ async function extractSearchResults(page, limit) {
   return parseGoogleHtml(html, limit);
 }
 
+function blockedError(page) {
+  const err = new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha in the Chromium browser session', {
+    session: 'google',
+    current_url: page.url(),
+    retry_hint: 'Open the google session in noVNC, complete the human verification in the visible Chromium, then retry.'
+  });
+  err.keepPageOpen = true;
+  return err;
+}
+
+function emptyResultsError(page) {
+  return new SearchEngineError('SERP_PARSE_FAILED', 'Google returned no results from the Chromium browser session', {
+    session: 'google',
+    current_url: page.url()
+  });
+}
+
+async function typeLikeHuman(page, text) {
+  for (let i = 0; i < text.length; i++) {
+    await page.keyboard.type(text[i], { delay: randomDelay(40, 110) });
+    const roll = Math.random();
+    if (roll < 0.08) {
+      await page.waitForTimeout(randomDelay(80, 250));
+    } else if (roll < 0.12) {
+      await page.waitForTimeout(randomDelay(350, 900));
+    }
+  }
+}
+
+async function searchViaHomepage(page, query, limit) {
+  await page.goto('https://www.google.com/', { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForTimeout(randomDelay(1500, 4000));
+
+  const searchBox = page.locator('textarea[name="q"], input[name="q"]').first();
+  await searchBox.waitFor({ state: 'visible', timeout: 20000 });
+  await searchBox.click();
+  await page.waitForTimeout(randomDelay(300, 900));
+  await typeLikeHuman(page, query);
+  await page.waitForTimeout(randomDelay(400, 1200));
+  await page.keyboard.press('Enter');
+  await page.waitForLoadState('domcontentloaded', { timeout: 45000 });
+  await page.waitForTimeout(randomDelay(2500, 5000));
+
+  const html = await page.content();
+  if (isLikelyBlockedText(html)) throw blockedError(page);
+  return parseGoogleHtml(html, limit);
+}
+
+async function searchViaDirectUrl(page, query, limit) {
+  await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=${limit}&hl=en`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 45000
+  });
+  await page.waitForTimeout(randomDelay(2000, 4000));
+  return extractSearchResults(page, limit);
+}
+
+async function humanGlance(page) {
+  await page.mouse.move(randomDelay(300, 1400), randomDelay(200, 900), { steps: 5 });
+  await page.waitForTimeout(randomDelay(400, 1200));
+  await page.mouse.wheel(0, randomDelay(200, 500));
+  await page.waitForTimeout(randomDelay(600, 1500));
+}
+
 async function searchGoogleApi(query, limit) {
   if (!GOOGLE_API_KEY) return [];
   const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=${limit}`;
@@ -74,34 +138,25 @@ export async function searchGoogleBrowser(query, opts = {}) {
     try {
       return await opts.browserPool.withPage({
         proxyProfile,
-        url: 'https://google.com',
+        url: 'https://www.google.com',
         sessionKey: 'google',
-        reuseSession: true
+        reuseSession: true,
+        closeDelayMs: [2500, 6000]
       }, async (page) => {
-        await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=${limit}&hl=en`, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: 45000 
-        });
-        await page.waitForTimeout(randomDelay(2000, 4000));
-        
-        const html = await page.content();
-        if (isLikelyBlockedText(html)) {
-          const err = new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha in the Chromium browser session', {
-            session: 'google',
-            current_url: page.url(),
-            retry_hint: 'Open the google session in noVNC, complete the human verification in the visible Chromium, then retry.'
-          });
-          err.keepPageOpen = true;
-          throw err;
+        let parsed;
+        try {
+          parsed = await searchViaHomepage(page, query, limit);
+        } catch (err) {
+          if (err.code === 'ENGINE_BLOCKED') throw err;
+          parsed = [];
         }
-        
-        const parsed = parseGoogleHtml(html, limit);
         if (parsed.length === 0) {
-          throw new SearchEngineError('SERP_PARSE_FAILED', 'Google returned no results from the Chromium browser session', {
-            session: 'google',
-            current_url: page.url()
-          });
+          parsed = await searchViaDirectUrl(page, query, limit);
         }
+        if (parsed.length === 0) {
+          throw emptyResultsError(page);
+        }
+        await humanGlance(page);
         return parsed;
       });
     } catch (err) {

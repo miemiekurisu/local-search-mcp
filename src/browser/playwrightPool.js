@@ -529,7 +529,7 @@ export class PlaywrightPool {
     }
   }
 
-  async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false } = {}, fn) {
+  async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false, closeDelayMs = 0 } = {}, fn) {
     let pageAcquired = false;
     if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
       let waiterResolve, waiterReject;
@@ -600,6 +600,20 @@ export class PlaywrightPool {
             if (this._keptPages.size > 3) this._cleanupKeptPages();
           }
         } else {
+          // Let the visitor "linger" before closing (randomized, slows down
+          // page open/close cadence and looks more human). closeDelayMs may be
+          // a single ms value (jittered +/-40%) or a [min, max] range.
+          if (closeDelayMs) {
+            let minMs, maxMs;
+            if (Array.isArray(closeDelayMs)) {
+              minMs = Math.max(0, closeDelayMs[0]);
+              maxMs = Math.max(minMs, closeDelayMs[1] ?? minMs);
+            } else {
+              minMs = Math.max(0, Math.floor(closeDelayMs * 0.6));
+              maxMs = Math.max(minMs, Math.floor(closeDelayMs * 1.4));
+            }
+            await sleep(minMs + Math.floor(Math.random() * (maxMs - minMs + 1)));
+          }
           // Navigate to about:blank to stop all JS execution and abort any
           // in-flight requests before closing. This prevents hangs from
           // beforeunload dialogs (Playwright #11581), stalled route handlers

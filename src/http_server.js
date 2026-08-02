@@ -273,11 +273,11 @@ export function createApp(kernelOverride, browserPoolOverride) {
           },
           {
             name: 'get_weather',
-            description: 'Get current weather and forecast for a location using Open-Meteo API. Free, no API key needed.',
+            description: 'Get current conditions and 7-day forecast for a location (Open-Meteo API, free, no API key). Input formats: city name ("Beijing", "北京"), "City, Country" ("London, UK", "上海, 中国"), Chinese districts/landmarks (成都武侯区, 上海人民广场, 三林镇), or coordinates ("51.51, -0.13"). When a name matches several places, the tool automatically picks the most likely one; only when the candidates are truly ambiguous does it return a numbered list with coordinates — then re-call with a more specific name or the exact coordinates. Examples: "Beijing" → direct forecast; "London" → auto-picks London, UK; "Portland, Oregon" → resolves directly; "51.51, -0.13" → forecast at coordinates.',
             inputSchema: {
               type: 'object',
               properties: {
-                location: { type: 'string', description: 'City name or location, e.g. "Beijing", "Tokyo"' }
+                location: { type: 'string', description: 'Location: city name ("Beijing", "北京"), "City, Country" ("London, UK", "上海, 中国"), or coordinates ("51.51, -0.13"). If a previous call returned a location options list, use the coordinates or a more specific name from it. Use the user\'s context (country, language, or region mentioned in the conversation) to pick the format.' }
               },
               required: ['location']
             }
