@@ -24,8 +24,9 @@
 
 ### 核心特性
 
-- **无需付费 API**：内置 DuckDuckGo、Bing、Wikipedia、Google 等搜索引擎，不依赖任何付费搜索服务
-- **多引擎搜索**：支持 DuckDuckGo（HTTP）、Wikipedia（HTTP）、Google（浏览器）、Bing（浏览器）、ChatGPT（浏览器）
+- **无需付费 API**：内置 DuckDuckGo、Bing、Wikipedia、Google、DeepSeek 等搜索引擎，不依赖任何付费搜索服务
+- **多引擎搜索**：支持 DuckDuckGo（HTTP）、Wikipedia（HTTP）、Google（浏览器）、Bing（浏览器）、ChatGPT（浏览器）、DeepSeek（浏览器）
+- **DeepSeek 深度回答**：返回完整答案 + DeepThink 思考链，可选 prompt 层自我验证（区分确凿事实/推断、标注不确定性）
 - **网页抓取**：HTTP 抓取失败自动回退到浏览器渲染，支持 SPA 页面
 - **深度研究**：自动生成查询家族，多引擎并行搜索，返回结构化证据
 - **天气查询**：基于 Open-Meteo API，支持中文地名（自动拼音转换）
@@ -48,12 +49,14 @@
 └──────────────────────────────────────────────┘
 ```
 
-### 分支说明
+### 资源适配
 
-| 分支 | 平台 | 基础镜像 | 适用场景 |
-|------|------|----------|----------|
-| `main` | x86_64 / macOS | `node:22-bookworm` + Playwright Chromium | 主流桌面/服务器 |
-| `arm64` | ARM (aarch64) | `node:22-bookworm` + apt Chromium | ARM 设备（如 TN3399） |
+单分支部署，低性能设备（如 ARM 开发板）通过 `.env` 节制资源：
+
+| 变量 | 说明 |
+|------|------|
+| `LOW_POWER_DEVICE=true` | 降低并发（页面/会话/fetch 均 1），缩短拟人滚动停顿 |
+| `MEM_LIMIT=2g` | 容器内存上限，防止 Chromium OOM 拖垮宿主 |
 
 ---
 
@@ -75,11 +78,7 @@ curl http://localhost:8765/health
 # 返回: {"ok":true}
 ```
 
-ARM 设备额外步骤：
-```bash
-git checkout arm64
-docker compose up -d --build
-```
+低性能设备（如 ARM 开发板）在 `.env` 设置 `LOW_POWER_DEVICE=true`、`MEM_LIMIT=2g` 后启动即可。
 
 ---
 
@@ -100,9 +99,10 @@ docker compose up -d --build
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `LAN_PROXY_SERVER` | `""` | 搜索引擎 HTTP 代理（如 `http://192.168.1.100:7890`） |
+| `LAN_PROXY_SERVER` | `""` | 搜索引擎 HTTP 代理 |
 | `VISIBLE_BROWSER_PROXY_SERVER` | `""` | Chromium 浏览器代理（`--proxy-server` 参数） |
 | `BROWSER_PROXY_SERVER` | `""` | HTTP profile 代理（proxy_profiles.json） |
+| `VISIBLE_BROWSER_PROXY_BYPASS` | `<-loopback>` | Chromium 代理绕过列表，按站点直连（如 `*deepseek.com`） |
 
 ### 安全配置
 
@@ -119,6 +119,21 @@ docker compose up -d --build
 |------|--------|------|
 | `CHATGPT_EMAIL` | `""` | ChatGPT 自动登录邮箱 |
 | `CHATGPT_PASSWORD` | `""` | ChatGPT 自动登录密码 |
+
+### DeepSeek 引擎
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DEEPSEEK_MAX_SNIPPET` | `20000` | 答案返回长度 |
+| `DEEPSEEK_INCLUDE_REASONING` | `true` | 是否保留 DeepThink 思考链 |
+| `DEEPSEEK_MAX_REASONING` | `8000` | 思考链长度 |
+| `DEEPSEEK_VERIFY` | `false` | prompt 层自我验证（区分事实/推断、标注不确定性） |
+| `DEEPSEEK_VALIDATE` | `false` | 交叉验证链：DeepSeek→Google AI→DeepSeek |
+| `DEEPSEEK_RETRY` | `3` | 每步失败重试次数 |
+| `DEEPSEEK_MAX_INPUT_CHARS` | `2000` | 输入长度上限 |
+| `DEEPSEEK_TIMEOUT_MS` | `150000` | 等待回复超时 |
+| `DEEPSEEK_TRACE_ENABLED` | `false` | 保存对话轨迹（JSONL） |
+| `DEEPSEEK_TRACE_DIR` | `/data/traces` | 轨迹存储目录 |
 
 ### 学术论文工具
 
@@ -159,11 +174,12 @@ curl -s -X POST http://localhost:8765/search \
 
 | 引擎 | 类型 | 需要登录 | 说明 |
 |------|------|----------|------|
-| `duckduckgo` | HTTP | 否 | 默认引擎，无需浏览器 |
+| `duckduckgo` | 浏览器 | 否 | 走可见 Chromium |
 | `wikipedia` | HTTP | 否 | 默认引擎，无需浏览器 |
 | `google` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
 | `bing` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
 | `chatgpt` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
+| `deepseek` | 浏览器 | 是 | 需登录 chat.deepseek.com；返回完整答案+思考链，可交叉验证 |
 
 ### 2. 网页抓取
 
@@ -385,7 +401,7 @@ curl -s http://localhost:8765/mcp \
 
 ### 内置安全措施
 
-- **SSRF 防护**：拦截内网 IP（IPv4/IPv6）、非 http(s) scheme、重定向回内网
+- **SSRF 防护**：拦截内网/回环/保留地址（含数字/十六进制/IPv4-mapped IP 字面量）、非 http(s) scheme、DNS 重绑定、重定向回内网
 - **路径遍历防护**：artifact 读取限制在 `/data/artifacts/` 内
 - **信息泄露防护**：`/health` 仅返回 `{"ok":true}`，不泄露版本信息
 - **速率限制**：默认 100 请求/分钟/IP，支持自定义
@@ -402,6 +418,7 @@ curl -s http://localhost:8765/mcp \
 | `data/browser-state` | 搜索引擎会话快照 |
 | `data/artifacts` | 搜索结果与抓取文本 |
 | `data/cache/papers` | 论文缓存（SQLite + 文件） |
+| `data/traces` | DeepSeek 对话轨迹（`DEEPSEEK_TRACE_ENABLED=true` 时启用） |
 
 ### 数据迁移
 
