@@ -19,6 +19,13 @@ const PAGE_QUEUE_TIMEOUT_MS = envInt('PAGE_QUEUE_TIMEOUT_MS', 60000, 1000);
 const BROWSER_SIMULATE_BROWSING = process.env.BROWSER_SIMULATE_BROWSING !== 'false';
 const BROWSER_SCROLL_DELAY_MIN_MS = envInt('BROWSER_SCROLL_DELAY_MIN_MS', LOW_POWER_DEVICE ? 120 : 200, 20);
 const BROWSER_SCROLL_DELAY_MAX_MS = envInt('BROWSER_SCROLL_DELAY_MAX_MS', LOW_POWER_DEVICE ? 350 : 700, 50);
+// Restoring a saved session's localStorage opens one page per stored origin and
+// navigates to that site (a real profile can hold dozens of unrelated origins —
+// github, medium, etc.), causing rapid tab churn + heavy CPU on low-memory ARM.
+// Default OFF: only cookies (the actual login state) are restored. Turn on only
+// if a specific site needs its localStorage restored; RESTORE_MAX_ORIGINS bounds it.
+const RESTORE_LOCALSTORAGE = process.env.BROWSER_RESTORE_LOCALSTORAGE === 'true';
+const RESTORE_MAX_ORIGINS = envInt('BROWSER_RESTORE_MAX_ORIGINS', 3, 0);
 
 // Fingerprint policy.
 // Personal use attaches to a long-lived, manually-verified Chromium (CDP). For
@@ -518,8 +525,10 @@ export class PlaywrightPool {
       if (Array.isArray(raw.cookies) && raw.cookies.length > 0) {
         await context.addCookies(raw.cookies);
       }
-      if (Array.isArray(raw.origins) && raw.origins.length > 0) {
-        for (const originEntry of raw.origins) {
+      // localStorage restore is OFF by default (see RESTORE_LOCALSTORAGE note):
+      // opening a page per origin churns dozens of tabs. Bound to MAX_ORIGINS.
+      if (RESTORE_LOCALSTORAGE && Array.isArray(raw.origins) && raw.origins.length > 0) {
+        for (const originEntry of raw.origins.slice(0, RESTORE_MAX_ORIGINS)) {
           if (!originEntry?.origin || !Array.isArray(originEntry.localStorage) || originEntry.localStorage.length === 0) {
             continue;
           }
