@@ -43,6 +43,12 @@ services:
        # 会话文件可能含几十个无关站点导致 tab 狂切。需恢复时设 true，并限制 origin 数。
        - BROWSER_RESTORE_LOCALSTORAGE=${BROWSER_RESTORE_LOCALSTORAGE:-false}
        - BROWSER_RESTORE_MAX_ORIGINS=${BROWSER_RESTORE_MAX_ORIGINS:-3}
+       # DeepSeek 引擎输出配置
+       - DEEPSEEK_MAX_SNIPPET=${DEEPSEEK_MAX_SNIPPET:-20000}       # 答案返回长度（保留完整信息）
+       - DEEPSEEK_INCLUDE_REASONING=${DEEPSEEK_INCLUDE_REASONING:-true}  # 保留思考链
+       - DEEPSEEK_MAX_REASONING=${DEEPSEEK_MAX_REASONING:-8000}     # 思考链长度
+       - DEEPSEEK_VERIFY=${DEEPSEEK_VERIFY:-false}                  # prompt 层自我验证
+       - DEEPSEEK_TIMEOUT_MS=${DEEPSEEK_TIMEOUT_MS:-150000}         # 等待回复超时
 
        - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
        - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}
