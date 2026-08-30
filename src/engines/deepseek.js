@@ -56,7 +56,8 @@ const VERIFY_SUFFIX = [
   '最后用一段"正确性自检"说明哪些结论可靠、哪些需要进一步核验。'
 ].join('\n');
 
-const GOOGLE_VALIDATE_SUFFIX = '求证一下这个内容是不是存在问题：\n';
+const GOOGLE_VALIDATE_SUFFIX =
+  '请使用 AI 模式搜索网络（联网核实），求证以下内容是不是存在问题：\n';
 const DEEPSEEK_SYNTHESIS_SUFFIX = (googleReply, originalQuery) =>
   `别的模型是这样回答的：\n${googleReply}\n\n` +
   `你参考和求证，再综合求证一下，真正的答案是什么。原始问题：${originalQuery}`;
