@@ -73,11 +73,11 @@ services:
        - ./config:/app/config
     extra_hosts:
        - "host.docker.internal:host-gateway"
-    # 资源上限由 .env 控制（MEM_LIMIT / CPUS_LIMIT）。默认 0 = 不限制。
-    # 低内存/ARM 设备建议在 .env 设 MEM_LIMIT=2g, CPUS_LIMIT=4。
+    # 内存上限由 .env 的 MEM_LIMIT 控制（默认 0 = 不限制）。
+    # 低内存/ARM 设备建议设 MEM_LIMIT=2g。CPU 节制由软件并发参数
+    # （LOW_POWER_DEVICE / MAX_*_CONCURRENCY）承担——部分内核不支持 cpus/NanoCPUs。
     shm_size: "${SHM_SIZE:-1gb}"
     mem_limit: "${MEM_LIMIT:-0}"
-    cpus: "${CPUS_LIMIT:-0}"
     restart: unless-stopped
     healthcheck:
        test: ["CMD", "sh", "-c", "curl -sf http://localhost:8765/health"]
