@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG } from '../config/index.js';
 import { SearchEngineError, makeResult } from './base.js';
+import { searchGoogleAI } from './googleAIMode.js';
 
 const HOME_URL = 'https://chat.deepseek.com';
 const COMPOSER_SELECTOR = 'textarea[placeholder="Message DeepSeek"]';
@@ -20,8 +21,13 @@ const INCLUDE_REASONING = process.env.DEEPSEEK_INCLUDE_REASONING !== 'false';
 const MAX_REASONING = envInt('DEEPSEEK_MAX_REASONING', 8000, 0);
 const VERIFY = process.env.DEEPSEEK_VERIFY === 'true';
 const TIMEOUT_MS = envInt('DEEPSEEK_TIMEOUT_MS', 150000, 20000);
+// Cross-validation chain: DeepSeek answer -> Google AI cross-check -> DeepSeek
+// final synthesis. If Google AI is unavailable, validation is skipped and the
+// plain DeepSeek answer is returned (never blocks the caller).
+const VALIDATE = process.env.DEEPSEEK_VALIDATE === 'true';
 // Conversation-trajectory capture: when enabled, each completed DeepSeek turn
-// (prompt / reasoning / answer) is appended to a JSONL file for later processing.
+// (prompt / reasoning / answer, plus the validation chain if used) is appended
+// to a JSONL file for later processing.
 const TRACE_ENABLED = process.env.DEEPSEEK_TRACE_ENABLED === 'true';
 const TRACE_DIR = process.env.DEEPSEEK_TRACE_DIR || '/data/traces';
 
@@ -50,6 +56,11 @@ const VERIFY_SUFFIX = [
   '最后用一段"正确性自检"说明哪些结论可靠、哪些需要进一步核验。'
 ].join('\n');
 
+const GOOGLE_VALIDATE_SUFFIX = '求证一下这个内容是不是存在问题：\n';
+const DEEPSEEK_SYNTHESIS_SUFFIX = (googleReply, originalQuery) =>
+  `别的模型是这样回答的：\n${googleReply}\n\n` +
+  `你参考和求证，再综合求证一下，真正的答案是什么。原始问题：${originalQuery}`;
+
 function loginRequired(page) {
   return new SearchEngineError(
     'LOGIN_REQUIRED',
@@ -76,10 +87,9 @@ function readReply(page) {
   }, { answerSel: ANSWER_SELECTOR, thinkSel: THINK_SELECTOR });
 }
 
-export async function searchDeepSeek(query, opts = {}) {
+// Ask DeepSeek once (a fresh chat) for the given prompt.
+async function askDeepSeek(prompt, opts) {
   const proxyProfile = opts.proxyProfile || 'auto';
-  const prompt = VERIFY ? `${query}\n${VERIFY_SUFFIX}` : query;
-
   return await opts.browserPool.withPage({
     proxyProfile,
     url: HOME_URL,
@@ -96,7 +106,6 @@ export async function searchDeepSeek(query, opts = {}) {
     await page.fill(COMPOSER_SELECTOR, prompt);
     await page.press(COMPOSER_SELECTOR, 'Enter');
 
-    // Wait for the reply to appear and stop streaming.
     const deadline = Date.now() + TIMEOUT_MS;
     let last = { answer: '', reasoning: '' };
     let stable = 0;
@@ -117,31 +126,79 @@ export async function searchDeepSeek(query, opts = {}) {
     if (!last.answer) {
       throw new SearchEngineError('NO_RESPONSE', 'Timed out waiting for DeepSeek response', { session: 'deepseek' });
     }
-
-    const result = makeResult({
-      title: last.answer.slice(0, 100),
-      url: HOME_URL,
-      snippet: last.answer.slice(0, MAX_SNIPPET),
-      engine: 'deepseek',
-      rank: 1
-    });
-    if (INCLUDE_REASONING && last.reasoning) {
-      result.reasoning = last.reasoning.slice(0, MAX_REASONING);
-      result.reasoning_included = true;
-    }
-    result.answer_chars = last.answer.length;
-    result.verify_requested = VERIFY;
-    if (TRACE_ENABLED) {
-      saveTrace({
-        timestamp: new Date().toISOString(),
-        engine: 'deepseek',
-        query,
-        prompt,
-        answer: last.answer,
-        reasoning: last.reasoning || '',
-        verify: VERIFY
-      });
-    }
-    return [result];
+    return last;
   });
+}
+
+export async function searchDeepSeek(query, opts = {}) {
+  const prompt1 = VERIFY ? `${query}\n${VERIFY_SUFFIX}` : query;
+  const r1 = await askDeepSeek(prompt1, opts);
+
+  const result = makeResult({
+    title: r1.answer.slice(0, 100),
+    url: HOME_URL,
+    snippet: r1.answer.slice(0, MAX_SNIPPET),
+    engine: 'deepseek',
+    rank: 1
+  });
+  if (INCLUDE_REASONING && r1.reasoning) {
+    result.reasoning = r1.reasoning.slice(0, MAX_REASONING);
+    result.reasoning_included = true;
+  }
+  result.answer_chars = r1.answer.length;
+  result.verify_requested = VERIFY;
+
+  const trace = {
+    timestamp: new Date().toISOString(),
+    engine: 'deepseek',
+    query,
+    prompt: prompt1,
+    answer: r1.answer,
+    reasoning: r1.reasoning || '',
+    verify: VERIFY
+  };
+
+  if (VALIDATE) {
+    // Step 2: ask Google AI to cross-check the DeepSeek answer.
+    let googleReply = null;
+    let googleError = null;
+    try {
+      googleReply = await searchGoogleAI(`${GOOGLE_VALIDATE_SUFFIX}${r1.answer}`, opts);
+    } catch (err) {
+      googleError = err?.message || String(err);
+    }
+
+    if (googleReply) {
+      // Step 3: feed Google's reply back to DeepSeek for final synthesis.
+      const finalPrompt = DEEPSEEK_SYNTHESIS_SUFFIX(googleReply, query);
+      const r2 = await askDeepSeek(finalPrompt, opts);
+
+      result.snippet = r2.answer.slice(0, MAX_SNIPPET);
+      result.title = r2.answer.slice(0, 100);
+      result.answer_chars = r2.answer.length;
+      if (INCLUDE_REASONING && r2.reasoning) {
+        result.reasoning = r2.reasoning.slice(0, MAX_REASONING);
+      }
+      result.validate = 'done';
+      result.google_reply = googleReply.slice(0, 4000);
+      result.deepseek_initial = r1.answer.slice(0, 2000);
+
+      trace.validate_status = 'done';
+      trace.google_reply = googleReply;
+      trace.final_prompt = finalPrompt;
+      trace.final_answer = r2.answer;
+      trace.final_reasoning = r2.reasoning || '';
+    } else {
+      // Google unavailable: surface a notice and force-disable validation, but
+      // still return the plain DeepSeek answer (never block).
+      result.validate = 'disabled';
+      result.validate_reason =
+        `Google AI Mode unavailable; validation skipped, returning DeepSeek answer. ${googleError || ''}`.trim();
+      trace.validate_status = 'google_unavailable';
+      trace.google_error = googleError || '';
+    }
+  }
+
+  if (TRACE_ENABLED) saveTrace(trace);
+  return [result];
 }
