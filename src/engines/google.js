@@ -153,8 +153,8 @@ export async function searchGoogleBrowser(query, opts = {}) {
         url: 'https://www.google.com',
         sessionKey: 'google',
         reuseSession: true,
-        closeDelayMs: [2500, 6000],
-        timeoutMs: 80000
+        closeDelayMs: [7000, 12000],
+        timeoutMs: 140000
       }, async (page) => {
         let parsed;
         try {

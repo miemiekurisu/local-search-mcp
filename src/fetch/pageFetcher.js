@@ -19,7 +19,7 @@ function browserFetchCloseDelay() {
       if (Number.isFinite(n) && n >= 0) return n;
     }
   }
-  return LOW_POWER_DEVICE ? [1200, 3000] : [2500, 6000];
+  return LOW_POWER_DEVICE ? [2500, 5000] : [4000, 8000];
 }
 
 export class PageFetcher {
