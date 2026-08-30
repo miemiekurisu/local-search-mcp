@@ -21,6 +21,29 @@ const INCLUDE_REASONING = process.env.DEEPSEEK_INCLUDE_REASONING !== 'false';
 const MAX_REASONING = envInt('DEEPSEEK_MAX_REASONING', 8000, 0);
 const VERIFY = process.env.DEEPSEEK_VERIFY === 'true';
 const TIMEOUT_MS = envInt('DEEPSEEK_TIMEOUT_MS', 150000, 20000);
+// Network can be flaky (long prompts, browser sessions); retry each step so a
+// transient failure does not drop the whole result. Attempts = number of tries.
+const RETRY = envInt('DEEPSEEK_RETRY', 3, 1);
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function withRetry(fn, attempts, label) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        console.error(`[deepseek] ${label} attempt ${i + 1}/${attempts} failed, retrying: ${err?.message}`);
+        await sleep(3000 * (i + 1));
+      }
+    }
+  }
+  throw lastErr;
+}
 // Cross-validation chain: DeepSeek answer -> Google AI cross-check -> DeepSeek
 // final synthesis. If Google AI is unavailable, validation is skipped and the
 // plain DeepSeek answer is returned (never blocks the caller).
@@ -133,7 +156,7 @@ async function askDeepSeek(prompt, opts) {
 
 export async function searchDeepSeek(query, opts = {}) {
   const prompt1 = VERIFY ? `${query}\n${VERIFY_SUFFIX}` : query;
-  const r1 = await askDeepSeek(prompt1, opts);
+  const r1 = await withRetry(() => askDeepSeek(prompt1, opts), RETRY, 'deepseek first answer');
 
   const result = makeResult({
     title: r1.answer.slice(0, 100),
@@ -164,7 +187,11 @@ export async function searchDeepSeek(query, opts = {}) {
     let googleReply = null;
     let googleError = null;
     try {
-      googleReply = await searchGoogleAI(`${GOOGLE_VALIDATE_SUFFIX}${r1.answer}`, opts);
+      googleReply = await withRetry(
+        () => searchGoogleAI(`${GOOGLE_VALIDATE_SUFFIX}${r1.answer}`, opts),
+        RETRY,
+        'google ai cross-check'
+      );
     } catch (err) {
       googleError = err?.message || String(err);
     }
@@ -172,7 +199,7 @@ export async function searchDeepSeek(query, opts = {}) {
     if (googleReply) {
       // Step 3: feed Google's reply back to DeepSeek for final synthesis.
       const finalPrompt = DEEPSEEK_SYNTHESIS_SUFFIX(googleReply, query);
-      const r2 = await askDeepSeek(finalPrompt, opts);
+      const r2 = await withRetry(() => askDeepSeek(finalPrompt, opts), RETRY, 'deepseek synthesis');
 
       result.snippet = r2.answer.slice(0, MAX_SNIPPET);
       result.title = r2.answer.slice(0, 100);

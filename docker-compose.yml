@@ -52,6 +52,7 @@ services:
        - DEEPSEEK_TRACE_ENABLED=${DEEPSEEK_TRACE_ENABLED:-false}    # 保存对话轨迹（prompt/思考/回答）
        - DEEPSEEK_TRACE_DIR=${DEEPSEEK_TRACE_DIR:-/data/traces}     # 轨迹存储目录
        - DEEPSEEK_VALIDATE=${DEEPSEEK_VALIDATE:-false}              # 交叉验证：DeepSeek→Google AI→DeepSeek
+       - DEEPSEEK_RETRY=${DEEPSEEK_RETRY:-3}                        # 每步失败重试次数（网络不稳定时）
 
        - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
        - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}
