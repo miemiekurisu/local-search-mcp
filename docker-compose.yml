@@ -19,6 +19,9 @@ services:
        - VISIBLE_BROWSER_PROFILE_DIR=${VISIBLE_BROWSER_PROFILE_DIR:-/data/browser-profile}
        - VISIBLE_BROWSER_START_URL=${VISIBLE_BROWSER_START_URL:-about:blank}
        - VISIBLE_BROWSER_PROXY_SERVER=${VISIBLE_BROWSER_PROXY_SERVER:-}
+       # 可见 Chromium 代理绕过列表（按站点直连，例如 deepseek 不需代理）。
+       # 设 *deepseek.com 让 DeepSeek 直连，其他引擎仍走 VISIBLE_BROWSER_PROXY_SERVER。
+       - VISIBLE_BROWSER_PROXY_BYPASS=${VISIBLE_BROWSER_PROXY_BYPASS:-<-loopback>}
        - HTTP_PROXY=${HTTP_PROXY:-}
        - HTTPS_PROXY=${HTTPS_PROXY:-}
        - http_proxy=${http_proxy:-}
@@ -75,6 +78,8 @@ services:
        - ./data:/data
        - ./src:/app/src
        - ./config:/app/config
+       # Mount start.sh so visible-browser proxy-bypass config applies without image rebuild
+       - ./docker/local-search/start.sh:/usr/local/bin/start-local-search.sh:ro
     extra_hosts:
        - "host.docker.internal:host-gateway"
     # 内存上限由 .env 的 MEM_LIMIT 控制（默认 0 = 不限制）。

@@ -11,6 +11,10 @@ NOVNC_PASSWORD="${NOVNC_PASSWORD:-}"
 VISIBLE_BROWSER_PROFILE_DIR="${VISIBLE_BROWSER_PROFILE_DIR:-/data/browser-profile}"
 VISIBLE_BROWSER_START_URL="${VISIBLE_BROWSER_START_URL:-https://chatgpt.com/auth/login}"
 VISIBLE_BROWSER_PROXY_SERVER="${VISIBLE_BROWSER_PROXY_SERVER:-}"
+# Hosts to bypass the visible-browser proxy (comma-separated, Chromium syntax).
+# Per-site bypass lets engines like DeepSeek (domestic, no proxy needed) connect
+# directly while others (Google/Bing) still go through VISIBLE_BROWSER_PROXY_SERVER.
+VISIBLE_BROWSER_PROXY_BYPASS="${VISIBLE_BROWSER_PROXY_BYPASS:-<-loopback>}"
 VISIBLE_BROWSER_RESTART_DELAY="${VISIBLE_BROWSER_RESTART_DELAY:-2}"
 SUPERVISOR_CHECK_INTERVAL="${LOCAL_SEARCH_SUPERVISOR_CHECK_INTERVAL:-2}"
 
@@ -172,7 +176,7 @@ CHROMIUM_ARGS+=("${VISIBLE_BROWSER_START_URL}")
 
 if [[ -n "${VISIBLE_BROWSER_PROXY_SERVER}" ]]; then
   CHROMIUM_ARGS+=("--proxy-server=${VISIBLE_BROWSER_PROXY_SERVER}")
-  CHROMIUM_ARGS+=("--proxy-bypass-list=<-loopback>")
+  CHROMIUM_ARGS+=("--proxy-bypass-list=${VISIBLE_BROWSER_PROXY_BYPASS}")
 fi
 
 cleanup_browser_profile_locks() {
