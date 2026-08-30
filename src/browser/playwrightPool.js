@@ -8,13 +8,27 @@ const USE_EXISTING_CHROME = process.env.USE_EXISTING_CHROME === 'true';
 const EXISTING_CHROME_CONNECT_TIMEOUT_MS = envInt('EXISTING_CHROME_CONNECT_TIMEOUT_MS', 60000, 5000);
 const EXISTING_CHROME_CONNECT_RETRY_MS = envInt('EXISTING_CHROME_CONNECT_RETRY_MS', 500, 100);
 const VISIBLE_BROWSER_PROFILE_DIR = process.env.VISIBLE_BROWSER_PROFILE_DIR || null;
-const MAX_CONCURRENT_PAGES = envInt('MAX_CONCURRENT_PAGES', 2, 1);
-const MAX_SESSION_CONTEXTS = envInt('MAX_SESSION_CONTEXTS', 3, 1);
+const LOW_POWER_DEVICE = process.env.LOW_POWER_DEVICE === 'true';
+const MAX_CONCURRENT_PAGES = envInt('MAX_CONCURRENT_PAGES', LOW_POWER_DEVICE ? 1 : 2, 1);
+const MAX_SESSION_CONTEXTS = envInt('MAX_SESSION_CONTEXTS', LOW_POWER_DEVICE ? 1 : 3, 1);
 const KEPT_PAGE_TTL_MS = envInt('KEPT_PAGE_TTL_MS', 300000, 10000);
 const KEPT_PAGE_CLEANUP_INTERVAL_MS = envInt('KEPT_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
 const SESSION_PAGE_TTL_MS = envInt('SESSION_PAGE_TTL_MS', 600000, 60000);
 const SESSION_PAGE_CLEANUP_INTERVAL_MS = envInt('SESSION_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
 const PAGE_QUEUE_TIMEOUT_MS = envInt('PAGE_QUEUE_TIMEOUT_MS', 60000, 1000);
+const BROWSER_SIMULATE_BROWSING = process.env.BROWSER_SIMULATE_BROWSING !== 'false';
+const BROWSER_SCROLL_DELAY_MIN_MS = envInt('BROWSER_SCROLL_DELAY_MIN_MS', LOW_POWER_DEVICE ? 120 : 200, 20);
+const BROWSER_SCROLL_DELAY_MAX_MS = envInt('BROWSER_SCROLL_DELAY_MAX_MS', LOW_POWER_DEVICE ? 350 : 700, 50);
+
+// Fingerprint policy.
+// Personal use attaches to a long-lived, manually-verified Chromium (CDP). For
+// that profile, custom JS stealth spoofing can actually *hurt* identity consistency
+// (fake chrome.runtime, frozen hardwareConcurrency, fixed platform, random UA/locale
+// that disagree with the real browser/network). BROWSER_STEALTH_ON_CDP defaults to
+// false so we leave the real browser untouched; ephemeral (non-CDP) contexts may keep
+// the old stealth to guard launched incognito contexts.
+const ENABLE_STEALTH = process.env.BROWSER_STEALTH !== 'false';
+const ENABLE_STEALTH_ON_CDP = process.env.BROWSER_STEALTH_ON_CDP === 'true';
 
 const BROWSER_USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -68,6 +82,32 @@ function envInt(name, fallback, min) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Simulate human browsing before closing a page: randomized scroll steps with
+// occasional mouse-hover pauses. Makes page open/close cadence look organic and
+// helps avoid bot detection. Duration is bounded by the caller-provided
+// closeDelayMs; steps are jittered and scaled down on low-power (ARM) devices.
+async function simulateBrowsing(page, durationMs) {
+  if (!BROWSER_SIMULATE_BROWSING || !durationMs || !page || page.isClosed()) return;
+  const start = Date.now();
+  let y = 0;
+  try {
+    while (Date.now() - start < durationMs) {
+      if (page.isClosed()) break;
+      const delta = 120 + Math.floor(Math.random() * 380);
+      y += delta;
+      await page.mouse.wheel(0, delta);
+      if (Math.random() < 0.4) {
+        await page.mouse.move(150 + Math.random() * 350, 80 + Math.random() * 240, { steps: 3 });
+      }
+      const pause = BROWSER_SCROLL_DELAY_MIN_MS +
+        Math.floor(Math.random() * (BROWSER_SCROLL_DELAY_MAX_MS - BROWSER_SCROLL_DELAY_MIN_MS));
+      await page.waitForTimeout(pause);
+    }
+  } catch {
+    // page may have closed mid-scroll; ignore
+  }
 }
 
 function browserIsConnected(browser) {
@@ -223,8 +263,30 @@ async function humanBehavior(page) {
   await page.waitForTimeout(Math.random() * 300 + 100);
 }
 
+// Apply the custom JS fingerprint-spoofing stealth only when permitted. In CDP mode we
+// attach to a real, manually-verified persistent Chromium: injecting a fake
+// navigator/chrome fingerprint there can make the identity *inconsistent* with the real
+// browser (Client Hints, TLS, OS, profile history). BROWSER_STEALTH_ON_CDP=false
+// (default) means we leave the real browser untouched. Ephemeral launched contexts may
+// still use stealth when BROWSER_STEALTH=true.
+async function applyStealthIfNeeded(page, { isCdpMode }) {
+  if (!ENABLE_STEALTH) return;
+  if (isCdpMode && !ENABLE_STEALTH_ON_CDP) return;
+  await stealthPlugin(page);
+}
+
+// Session pages double as manual-recovery surfaces (login / CAPTCHA / Robot
+// Verification via noVNC). Blocking images there can break image-based verification, so we
+// only block heavy media on ephemeral launched contexts, never on the CDP persistent
+// Chromium.
+function applySessionResourcePolicy(page, { isCdpMode }) {
+  if (isCdpMode) return;
+  page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort().catch(() => {}));
+}
+
 export class PlaywrightPool {
   constructor(proxyRouter) {
+    console.log(`[browser] mode=${USE_EXISTING_CHROME ? 'cdp' : 'playwright-launch'} persistent-profile=${VISIBLE_BROWSER_PROFILE_DIR || 'none'} stealth=${ENABLE_STEALTH_ON_CDP ? 'enabled-for-cdp' : (USE_EXISTING_CHROME ? 'disabled-for-cdp' : (ENABLE_STEALTH ? 'enabled' : 'disabled'))}`);
     this.proxyRouter = proxyRouter;
     this.browser = null;
     this.connectedBrowser = null;
@@ -529,7 +591,7 @@ export class PlaywrightPool {
     }
   }
 
-  async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false, closeDelayMs = 0 } = {}, fn) {
+  async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false, closeDelayMs = 0, timeoutMs = 0 } = {}, fn) {
     let pageAcquired = false;
     if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
       let waiterResolve, waiterReject;
@@ -570,21 +632,41 @@ export class PlaywrightPool {
 
       page = await context.newPage();
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
-      await stealthPlugin(page);
+      await applyStealthIfNeeded(page, { isCdpMode });
 
       let keepPageOpen = false;
+      let aborted = false;
+      let fnTimer;
       try {
-        const result = await fn(page, context);
+        // Wrap fn so a hung browser task can be aborted: on timeout the page is
+        // closed below, releasing the page slot for queued waiters (prevents
+        // the pool from being starved by a stuck engine).
+        const fnPromise = Promise.resolve().then(() => fn(page, context));
+        fnPromise.catch(() => {}); // swallow late rejection after timeout path
+        let result;
+        if (timeoutMs > 0) {
+          const timeoutP = new Promise((_, reject) => {
+            fnTimer = setTimeout(() => {
+              aborted = true;
+              reject(Object.assign(new Error(`page task timed out after ${timeoutMs}ms`), { code: 'PAGE_TASK_TIMEOUT' }));
+            }, timeoutMs);
+            if (fnTimer?.unref) fnTimer.unref();
+          });
+          result = await Promise.race([fnPromise, timeoutP]);
+        } else {
+          result = await fnPromise;
+        }
         if (result && result.keepPageOpen) {
           keepPageOpen = true;
         }
         return result;
       } catch (err) {
-        if (err && err.keepPageOpen) {
+        if (!aborted && err && err.keepPageOpen) {
           keepPageOpen = true;
         }
         throw err;
       } finally {
+        clearTimeout(fnTimer);
         if (sessionKey) {
           await this.persistContextState(context, sessionKey);
         }
@@ -603,7 +685,7 @@ export class PlaywrightPool {
           // Let the visitor "linger" before closing (randomized, slows down
           // page open/close cadence and looks more human). closeDelayMs may be
           // a single ms value (jittered +/-40%) or a [min, max] range.
-          if (closeDelayMs) {
+          if (!aborted && closeDelayMs) {
             let minMs, maxMs;
             if (Array.isArray(closeDelayMs)) {
               minMs = Math.max(0, closeDelayMs[0]);
@@ -612,7 +694,8 @@ export class PlaywrightPool {
               minMs = Math.max(0, Math.floor(closeDelayMs * 0.6));
               maxMs = Math.max(minMs, Math.floor(closeDelayMs * 1.4));
             }
-            await sleep(minMs + Math.floor(Math.random() * (maxMs - minMs + 1)));
+            const lingerMs = minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+            await simulateBrowsing(page, lingerMs);
           }
           // Navigate to about:blank to stop all JS execution and abort any
           // in-flight requests before closing. This prevents hangs from
@@ -642,8 +725,9 @@ export class PlaywrightPool {
 
     let context;
     let mode = 'persistent-context';
+    const isCdpMode = Boolean(this.connectedBrowser);
     await this.getBrowser();
-    if (this.connectedBrowser) {
+    if (isCdpMode) {
       context = await this.getSharedContext();
       await this.hydrateSessionContext(context, sessionKey);
       mode = 'shared-cdp';
@@ -664,8 +748,8 @@ export class PlaywrightPool {
       }
       page = await context.newPage();
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
-      await stealthPlugin(page);
-      await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico)(\?|$)/i, route => route.abort().catch(() => {}));
+      await applyStealthIfNeeded(page, { isCdpMode });
+      applySessionResourcePolicy(page, { isCdpMode });
       pageEntry = { page, lastAccessedAt: Date.now() };
       this.sessionPages.set(sessionKey, pageEntry);
     } else {

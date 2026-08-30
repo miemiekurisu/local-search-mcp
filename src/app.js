@@ -27,6 +27,16 @@ export function createKernel() {
     paperKernel = new PaperKernel({ artifactStore, paperCacheStore });
     paperContentKernel = new PaperContentKernel({ paperKernel, paperCacheStore, paperCacheCleanup });
 
+    // Real (non-dry-run) periodic cache cleanup. paperContentKernel only ever runs
+    // cleanup(true), so without a timer here the manifest JSON grows unboundedly in
+    // memory and on disk. Run actual deletion every 6h.
+    const cleanupTimer = setInterval(() => {
+      paperCacheCleanup?.cleanup(false).catch(err => {
+        console.error('[local-search-mcp] paper cache cleanup failed:', err.message);
+      });
+    }, 6 * 60 * 60 * 1000);
+    cleanupTimer.unref();
+
     const missing = [];
     if (!process.env.OPENALEX_API_KEY) missing.push('OpenAlex (get key: https://openalex.org/keys)');
     if (!process.env.CROSSREF_MAILTO) missing.push('Crossref (set CROSSREF_MAILTO=your@email for higher rate limits)');

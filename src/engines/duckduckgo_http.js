@@ -1,13 +1,19 @@
 import * as cheerio from 'cheerio';
 import { CONFIG } from '../config/index.js';
-import { fetchWithTimeout } from '../utils/http.js';
 import { canonicalUrl, normalizeWhitespace, stripTrackingUrl, uniqueByUrl, isLikelyBlockedText } from '../utils/normalize.js';
 import { makeResult, SearchEngineError } from './base.js';
+
+// DuckDuckGo now runs through the real Chromium (Playwright/CDP) instead of a raw
+// HTTP fetch, matching the persistent-browser approach used for Google. This keeps a real
+// browser fingerprint and reuses the existing browser pool / proxy routing.
+//
+// NOTE: this file keeps its historical "duckduckgo_http" filename for a smaller
+// diff / easier rollback; the engine id exposed to callers stays 'duckduckgo'.
 
 let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 2000;
 
-function randomDelay(minMs = 200, maxMs = 1000) {
+function randomDelay(minMs = 500, maxMs = 2000) {
   return Math.floor(Math.random() * (maxMs - minMs) + minMs);
 }
 
@@ -20,15 +26,10 @@ async function rateLimitWait() {
   lastRequestTime = Date.now();
 }
 
-export async function searchDuckDuckGoHttp(query, opts = {}) {
-  await rateLimitWait();
-  const limit = opts.limit || CONFIG.defaultSearchLimit;
-  const proxy = opts.proxyRouter?.resolve(opts.proxyProfile || 'auto', 'https://html.duckduckgo.com')?.proxyUrl;
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const resp = await fetchWithTimeout(url, { timeoutMs: opts.timeoutMs || CONFIG.defaultTimeoutMs, proxyUrl: proxy });
-  const html = await resp.text();
-  if (!resp.ok) throw new SearchEngineError('ENGINE_HTTP_ERROR', `DuckDuckGo HTTP ${resp.status}`, { status: resp.status });
-  if (isLikelyBlockedText(html)) throw new SearchEngineError('ENGINE_BLOCKED', 'DuckDuckGo appears blocked/captcha');
+// The HTML endpoint is lightweight even inside a real browser and keeps the same stable
+// selectors (.result__a / .result__snippet), independent of DuckDuckGo's rotating
+// class names on the JS-rendered SERP.
+async function parseHtml(html, limit) {
   const $ = cheerio.load(html);
   const results = [];
   $('.result, .web-result').each((i, el) => {
@@ -42,35 +43,46 @@ export async function searchDuckDuckGoHttp(query, opts = {}) {
     href = canonicalUrl(stripTrackingUrl(href));
     if (title && /^https?:\/\//.test(href || '')) results.push(makeResult({ title, url: href, snippet, engine: 'duckduckgo', rank: results.length + 1 }));
   });
-  if (results.length === 0) {
-    // Lite fallback is less pretty but often works when the html endpoint changes.
-    return await searchDuckDuckGoLite(query, opts);
-  }
   return uniqueByUrl(results, limit).slice(0, limit);
 }
 
-async function searchDuckDuckGoLite(query, opts = {}) {
-  const limit = opts.limit || CONFIG.defaultSearchLimit;
-  const proxy = opts.proxyRouter?.resolve(opts.proxyProfile || 'auto', 'https://lite.duckduckgo.com')?.proxyUrl;
-  const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
-  const resp = await fetchWithTimeout(url, { timeoutMs: opts.timeoutMs || CONFIG.defaultTimeoutMs, proxyUrl: proxy });
-  const html = await resp.text();
-  if (!resp.ok) throw new SearchEngineError('ENGINE_HTTP_ERROR', `DuckDuckGo Lite HTTP ${resp.status}`, { status: resp.status });
-  if (isLikelyBlockedText(html)) throw new SearchEngineError('ENGINE_BLOCKED', 'DuckDuckGo Lite appears blocked/captcha');
-  const $ = cheerio.load(html);
-  const results = [];
-  $('a[href]').each((i, el) => {
-    let href = $(el).attr('href');
-    const title = normalizeWhitespace($(el).text());
-    if (!title || !href) return;
-    if (href.includes('/l/?')) {
-      try { href = new URL(href, 'https://duckduckgo.com').searchParams.get('uddg') || href; } catch {}
+export async function searchDuckDuckGo(query, opts = {}) {
+  const limit = Math.max(1, Math.min(20, Number(opts.limit || CONFIG.defaultSearchLimit)));
+  const proxyProfile = opts.proxyProfile || 'direct';
+
+  if (!opts.browserPool) {
+    throw new SearchEngineError('BROWSER_UNAVAILABLE', 'DuckDuckGo now requires the Chromium browser pool', { engine: 'duckduckgo' });
+  }
+
+  await rateLimitWait();
+
+  return await opts.browserPool.withPage({
+    proxyProfile,
+    url: 'https://html.duckduckgo.com',
+    closeDelayMs: [1500, 4000]
+  }, async (page) => {
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: opts.timeoutMs || CONFIG.browserTimeoutMs || 45000 });
+
+    // Small random settle so the page "loads" like a human visit before closing.
+    await page.waitForTimeout(randomDelay(800, 2500));
+
+    const html = await page.content();
+    if (isLikelyBlockedText(html)) {
+      throw new SearchEngineError('ENGINE_BLOCKED', 'DuckDuckGo appears blocked/captcha in Chromium', { engine: 'duckduckgo' });
     }
-    href = canonicalUrl(stripTrackingUrl(href));
-    if (/^https?:\/\//.test(href) && !href.includes('duckduckgo.com')) {
-      results.push(makeResult({ title, url: href, snippet: '', engine: 'duckduckgo_lite', rank: results.length + 1 }));
+
+    const results = parseHtml(html, limit);
+    if (results.length === 0) {
+      throw new SearchEngineError('SERP_PARSE_FAILED', 'DuckDuckGo returned no parseable results in Chromium');
     }
+
+    // Brief human-like glance before the pool closes the page.
+    try {
+      await page.mouse.wheel(0, randomDelay(120, 400));
+      await page.waitForTimeout(randomDelay(400, 1400));
+    } catch {}
+
+    return results;
   });
-  if (results.length === 0) throw new SearchEngineError('SERP_PARSE_FAILED', 'DuckDuckGo returned no parseable results');
-  return uniqueByUrl(results, limit).slice(0, limit);
 }

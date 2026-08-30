@@ -1,4 +1,5 @@
 import { fetch, ProxyAgent } from 'undici';
+import { hostIsPrivate, assertPublicHost } from './ssrf.js';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -61,20 +62,7 @@ export const DEFAULT_HEADERS = {
 
 function isInternalHost(hostname) {
   if (!hostname) return true;
-  // Strip square brackets from IPv6 hostnames (e.g. "[::1]" -> "::1")
-  if (hostname.startsWith('[') && hostname.endsWith(']')) hostname = hostname.slice(1, -1);
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
-  if (hostname.startsWith('192.168.')) return true;
-  if (hostname.startsWith('10.')) return true;
-  if (hostname.startsWith('172.16.') || hostname.startsWith('172.17.') || hostname.startsWith('172.18.') ||
-      hostname.startsWith('172.19.') || hostname.startsWith('172.2') || hostname.startsWith('172.30') || hostname.startsWith('172.31')) return true;
-  if (hostname === '169.254.169.254') return true;
-  if (hostname === '0.0.0.0') return true;
-  if (hostname.startsWith('fc') || hostname.startsWith('fd')) return true; // IPv6 Unique Local Address (fc00::/7)
-  if (hostname.startsWith('fe8') || hostname.startsWith('fe9') || hostname.startsWith('fea') || hostname.startsWith('feb')) return true; // IPv6 Link-Local (fe80::/10)
-  if (hostname.endsWith('.internal') || hostname.endsWith('.local')) return true;
-  if (hostname === 'host.docker.internal') return true;
-  return false;
+  return hostIsPrivate(hostname);
 }
 
 export async function fetchWithTimeout(url, opts = {}) {
@@ -98,6 +86,10 @@ export async function fetchWithTimeout(url, opts = {}) {
     if (proxyUrl && /^https?:\/\//i.test(proxyUrl)) {
       init.dispatcher = new ProxyAgent(proxyUrl);
     }
+    // DNS-rebinding guard: resolve the target hostname and refuse if it maps to
+    // a private/reserved address. Applied before the initial request and before
+    // every redirect hop.
+    await assertPublicHost(currentUrl);
     let resp = await fetch(currentUrl, init);
     let redirectCount = 0;
     while (resp.status === 301 || resp.status === 302 || resp.status === 303 || resp.status === 307 || resp.status === 308) {
@@ -115,6 +107,7 @@ export async function fetchWithTimeout(url, opts = {}) {
         throw Object.assign(new Error(`Redirect to internal address blocked: ${nextUrl.hostname}`), { code: 'SSRF_REDIRECT_BLOCKED' });
       }
       currentUrl = nextUrl.toString();
+      await assertPublicHost(currentUrl);
       resp = await fetch(currentUrl, { ...init, method: 'GET', body: undefined });
     }
     return resp;

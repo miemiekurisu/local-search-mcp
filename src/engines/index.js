@@ -1,7 +1,7 @@
 import { CONFIG, readJsonIfExists } from '../config/index.js';
 import { getBrowserSessionByEngine } from '../browser/sessionCatalog.js';
 import { uniqueByUrl } from '../utils/normalize.js';
-import { searchDuckDuckGoHttp } from './duckduckgo_http.js';
+import { searchDuckDuckGo } from './duckduckgo_http.js';
 import { searchBing } from './bing.js';
 import { searchGoogle } from './google.js';
 import { searchWikipedia } from './wikipedia.js';
@@ -41,7 +41,7 @@ export class EngineRegistry {
   async searchOne(engine, query, opts = {}) {
     const proxy = this.proxyRouter.resolveForEngine(engine);
     const baseOpts = { ...opts, proxyRouter: this.proxyRouter, proxyProfile: proxy.profile, browserPool: this.browserPool };
-    if (engine === 'duckduckgo') return await searchDuckDuckGoHttp(query, baseOpts);
+    if (engine === 'duckduckgo') return await searchDuckDuckGo(query, baseOpts);
     if (engine === 'bing') return await searchBing(query, baseOpts);
     if (engine === 'wikipedia') return await searchWikipedia(query, baseOpts);
     if (engine === 'google') return await searchGoogle(query, baseOpts);

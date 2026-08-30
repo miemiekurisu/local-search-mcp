@@ -76,7 +76,9 @@ export function createApp(kernelOverride, browserPoolOverride) {
   }
 
   const app = express();
-  app.set('trust proxy', 1);
+  // Default 0 = do not trust X-Forwarded-For. Prevents spoofing the rate-limit
+  // key via the header. Set TRUST_PROXY=N only behind N trusted reverse proxies.
+  app.set('trust proxy', CONFIG.trustProxyHops);
   app.use(express.json({ limit: '2mb' }));
   app.use(rateLimiter);
 

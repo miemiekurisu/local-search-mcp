@@ -4,6 +4,23 @@ import crypto from 'crypto';
 import { CONFIG, ensureDir, safeJoin } from '../../config/index.js';
 import { isExpired, computeExpiresAt } from './paperCachePolicy.js';
 
+// Serialize all manifest mutations (add/touch/delete) through one promise
+// queue. Each mutating method does load→modify→_save; without this, a touch()
+// running concurrently with addEntry() would re-save a snapshot that lacks the
+// freshly-added entry (lost update). Read-only queries are unaffected.
+let _writeQueue = Promise.resolve();
+async function _serializedWrite(fn) {
+  const prev = _writeQueue;
+  let release;
+  _writeQueue = new Promise(r => (release = r));
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 export class PaperCacheManifest {
   constructor(manifestPath) {
     this.path = manifestPath;
@@ -62,51 +79,57 @@ export class PaperCacheManifest {
   }
 
   addEntry(entry) {
-    this.load();
-    const id = entry.id || crypto.randomUUID();
-    const now = new Date().toISOString();
-    this._data.items[id] = {
-      id,
-      paper_key: entry.paper_key,
-      identifier_type: entry.identifier_type || null,
-      identifier_value: entry.identifier_value || null,
-      variant: entry.variant,
-      source: entry.source || null,
-      source_url: entry.source_url || null,
-      normalized_url: entry.normalized_url || null,
-      content_hash: entry.content_hash || null,
-      file_path: entry.file_path,
-      mime_type: entry.mime_type || null,
-      size_bytes: entry.size_bytes || 0,
-      created_at: now,
-      last_access_at: now,
-      expires_at: entry.expires_at || computeExpiresAt(entry.variant) || null,
-      pinned: entry.pinned ? 1 : 0,
-      open_access_status: entry.open_access_status || null,
-      license: entry.license || null,
-      status: entry.status || 'ready',
-      error_message: entry.error_message || null
-    };
-    this._save();
-    return id;
+    return _serializedWrite(() => {
+      this.load();
+      const id = entry.id || crypto.randomUUID();
+      const now = new Date().toISOString();
+      this._data.items[id] = {
+        id,
+        paper_key: entry.paper_key,
+        identifier_type: entry.identifier_type || null,
+        identifier_value: entry.identifier_value || null,
+        variant: entry.variant,
+        source: entry.source || null,
+        source_url: entry.source_url || null,
+        normalized_url: entry.normalized_url || null,
+        content_hash: entry.content_hash || null,
+        file_path: entry.file_path,
+        mime_type: entry.mime_type || null,
+        size_bytes: entry.size_bytes || 0,
+        created_at: now,
+        last_access_at: now,
+        expires_at: entry.expires_at || computeExpiresAt(entry.variant) || null,
+        pinned: entry.pinned ? 1 : 0,
+        open_access_status: entry.open_access_status || null,
+        license: entry.license || null,
+        status: entry.status || 'ready',
+        error_message: entry.error_message || null
+      };
+      this._save();
+      return id;
+    });
   }
 
   touch(id) {
-    this.load();
-    const item = this._data.items[id];
-    if (item) {
-      item.last_access_at = new Date().toISOString();
-      item.access_count = (item.access_count || 0) + 1;
-      this._save();
-    }
+    return _serializedWrite(() => {
+      this.load();
+      const item = this._data.items[id];
+      if (item) {
+        item.last_access_at = new Date().toISOString();
+        item.access_count = (item.access_count || 0) + 1;
+        this._save();
+      }
+    });
   }
 
   deleteEntry(id) {
-    this.load();
-    const removed = this._data.items[id] || null;
-    delete this._data.items[id];
-    this._save();
-    return removed;
+    return _serializedWrite(() => {
+      this.load();
+      const removed = this._data.items[id] || null;
+      delete this._data.items[id];
+      this._save();
+      return removed;
+    });
   }
 
   queryExpired(now) {

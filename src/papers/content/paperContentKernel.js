@@ -36,7 +36,7 @@ export class PaperContentKernel {
       const cached = this.cache.findPaper(paperKey);
       if (cached.sections && cached.sections.length > 0) {
         const entry = cached.sections[0];
-        const data = this.cache.readJson(entry.id);
+        const data = await this.cache.readJson(entry.id);
         if (data) {
           return {
             paper_key: paperKey,
@@ -88,7 +88,7 @@ export class PaperContentKernel {
 
         if (this.cache && this.cache.enabled) {
           try {
-            this.cache.storeText(paperKey, extracted.fullText || extracted.text || '', {
+            await this.cache.storeText(paperKey, extracted.fullText || extracted.text || '', {
               source: candidate.source,
               source_url: candidate.url,
               pinned: false
@@ -102,8 +102,8 @@ export class PaperContentKernel {
 
         if (this.cache && this.cache.enabled) {
           try {
-            this.cache.storeSections(paperKey, chunked.sections, { pinned: false });
-            this.cache.storeChunks(paperKey, chunked.chunks, { pinned: false });
+            await this.cache.storeSections(paperKey, chunked.sections, { pinned: false });
+            await this.cache.storeChunks(paperKey, chunked.chunks, { pinned: false });
           } catch (cacheErr) {
             console.warn(`[content-kernel] cache sections/chunks failed: ${cacheErr.message}`);
           }
@@ -111,7 +111,7 @@ export class PaperContentKernel {
 
         if (this.cleanup) {
           try {
-            this.cleanup.cleanup(true);
+            await this.cleanup.cleanup(true);
           } catch {}
         }
 
@@ -160,7 +160,7 @@ export class PaperContentKernel {
 
     const cached = this.cache.findPaper(paperKey);
     if (!cached.sections || cached.sections.length === 0) {
-      const text = cached.text && cached.text.length > 0 ? this.cache.readText(cached.text[0].id) : null;
+      const text = cached.text && cached.text.length > 0 ? await this.cache.readText(cached.text[0].id) : null;
       if (text) {
         const sections = splitTextIntoSections(text.data);
         const chunked = sectionChunker({ sections: sections.map(s => ({ heading: s.heading, text: s.text })) });
@@ -171,11 +171,11 @@ export class PaperContentKernel {
       throw new Error('No content found for this paper key');
     }
 
-    const entry = cached.sections[0];
-    const data = this.cache.readJson(entry.id);
+        const entry = cached.sections[0];
+        const data = await this.cache.readJson(entry.id);
     if (!data) throw new Error('Failed to read cached sections');
 
-    const chunks = cached.chunks && cached.chunks.length > 0 ? this.cache.readJson(cached.chunks[0].id) : { data: [] };
+    const chunks = cached.chunks && cached.chunks.length > 0 ? await this.cache.readJson(cached.chunks[0].id) : { data: [] };
 
     return { paper_key: paperKey, cached: true, sections: data.data, chunks: chunks.data || [] };
   }

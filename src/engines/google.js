@@ -8,8 +8,14 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_SEARCH_ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
 const ENABLE_GOOGLE_API_FALLBACK = process.env.ENABLE_GOOGLE_API_FALLBACK === 'true';
 
+function envInt(name, fallback, min) {
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.floor(n));
+}
+
 let lastRequestTime = 0;
-const MIN_INTERVAL_MS = 3000;
+const MIN_INTERVAL_MS = envInt('GOOGLE_MIN_INTERVAL_MS', 3000, 0);
 
 function randomDelay(minMs = 500, maxMs = 2000) {
   return Math.floor(Math.random() * (maxMs - minMs) + minMs);
@@ -31,10 +37,16 @@ async function extractSearchResults(page, limit) {
 }
 
 function blockedError(page) {
-  const err = new SearchEngineError('ENGINE_BLOCKED', 'Google appears blocked/captcha in the Chromium browser session', {
+  // Treated as a normal HUMAN_REQUIRED state, not a browser crash. Do NOT reset the
+  // profile, clear cookies, or open a second browser. keepPageOpen=true keeps the
+  // verification page alive in the persistent Chromium so the user can finish it via noVNC.
+  const err = new SearchEngineError('ENGINE_BLOCKED', 'Google requires human verification (CAPTCHA/robot check)', {
     session: 'google',
+    reason: 'captcha_or_robot_verification',
+    recovery: 'novnc',
+    retryable: true,
     current_url: page.url(),
-    retry_hint: 'Open the google session in noVNC, complete the human verification in the visible Chromium, then retry.'
+    retry_hint: 'Open the google session in noVNC, complete the human verification in the visible Chromium, then retry. Do not reset the profile or clear cookies.'
   });
   err.keepPageOpen = true;
   return err;
@@ -141,7 +153,8 @@ export async function searchGoogleBrowser(query, opts = {}) {
         url: 'https://www.google.com',
         sessionKey: 'google',
         reuseSession: true,
-        closeDelayMs: [2500, 6000]
+        closeDelayMs: [2500, 6000],
+        timeoutMs: 80000
       }, async (page) => {
         let parsed;
         try {

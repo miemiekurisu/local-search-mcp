@@ -1,19 +1,25 @@
 import fs from 'fs';
 import path from 'path';
 
+const LOW_POWER_DEVICE = process.env.LOW_POWER_DEVICE === 'true';
+
 export const CONFIG = {
   timezone: process.env.TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone,
   port: Number(process.env.PORT || 8765),
   mcpBearerToken: process.env.MCP_BEARER_TOKEN || '',
   rateLimitMaxRequests: clampInt(process.env.RATE_LIMIT_MAX_REQUESTS, 100, 1, 10000),
   rateLimitWindowMs: clampInt(process.env.RATE_LIMIT_WINDOW_MS, 60000, 1000, 3600000),
+  // Trust proxy hop count for req.ip. Default 0 = do NOT trust X-Forwarded-For,
+  // so the rate limiter keys on the real socket address and cannot be bypassed
+  // by spoofing the header. Set to N only when behind N trusted reverse proxies.
+  trustProxyHops: clampInt(process.env.TRUST_PROXY, 0, 0, 8),
   artifactDir: process.env.ARTIFACT_DIR || '/data/artifacts',
   artifactTtlDays: clampInt(process.env.ARTIFACT_TTL_DAYS, 7, 1, 365),
   browserStateDir: process.env.BROWSER_STATE_DIR || '/data/browser-state',
   defaultSearchLimit: clampInt(process.env.DEFAULT_SEARCH_LIMIT, 20, 1, 20),
   defaultFetchTopK: clampInt(process.env.DEFAULT_FETCH_TOP_K, 20, 1, 20),
   maxSearchLimit: clampInt(process.env.MAX_SEARCH_LIMIT, 20, 1, 20),
-  maxFetchConcurrency: clampInt(process.env.MAX_FETCH_CONCURRENCY, 3, 1, 8),
+  maxFetchConcurrency: clampInt(process.env.MAX_FETCH_CONCURRENCY, LOW_POWER_DEVICE ? 1 : 3, 1, 8),
   defaultTimeoutMs: clampInt(process.env.DEFAULT_TIMEOUT_MS, 15000, 2000, 120000),
   browserTimeoutMs: clampInt(process.env.BROWSER_TIMEOUT_MS, 45000, 5000, 180000),
   headless: (process.env.SEARCH_HEADLESS || 'true') !== 'false',

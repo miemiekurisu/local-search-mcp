@@ -8,13 +8,13 @@ export class PaperCacheCleanup {
     this.config = config;
   }
 
-  cleanup(dryRun = true) {
+  async cleanup(dryRun = true) {
     if (!this.store.enabled) return { enabled: false };
     const steps = [];
     steps.push(this._cleanupTmp(dryRun));
     const expired = this.store.manifest.queryExpired(new Date());
-    steps.push(this._cleanupExpired(expired, dryRun));
-    const quotaSteps = this._enforceRawQuota(dryRun);
+    steps.push(await this._cleanupExpired(expired, dryRun));
+    const quotaSteps = await this._enforceRawQuota(dryRun);
     steps.push(...quotaSteps);
     const summary = this._summarize(steps, dryRun);
     return summary;
@@ -42,12 +42,12 @@ export class PaperCacheCleanup {
     return { step: 'cleanup_tmp', removed, dry_run: dryRun };
   }
 
-  _cleanupExpired(expired, dryRun) {
-    const removed = this.store.cleanupItems(expired, dryRun);
+  async _cleanupExpired(expired, dryRun) {
+    const removed = await this.store.cleanupItems(expired, dryRun);
     return { step: 'cleanup_expired', removed: removed.length, items: removed.length > 0 ? removed.slice(0, 5) : [], dry_run: dryRun };
   }
 
-  _enforceRawQuota(dryRun) {
+  async _enforceRawQuota(dryRun) {
     const steps = [];
     const raws = this.store.manifest.queryByVariant('raw/pdf')
       .concat(this.store.manifest.queryByVariant('raw/html'))
@@ -65,7 +65,7 @@ export class PaperCacheCleanup {
       freed += item.size_bytes || 0;
       toRemove.push(item);
     }
-    const removed = this.store.cleanupItems(toRemove, dryRun);
+    const removed = await this.store.cleanupItems(toRemove, dryRun);
     if (removed.length > 0) {
       steps.push({ step: 'enforce_raw_quota', removed: removed.length, bytes_freed: freed, dry_run: dryRun });
     }

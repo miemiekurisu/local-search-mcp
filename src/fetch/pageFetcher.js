@@ -2,6 +2,25 @@ import { CONFIG } from '../config/index.js';
 import { fetchWithTimeout, contentTypeOf } from '../utils/http.js';
 import { extractTextFromHtml } from './extract.js';
 import { normalizeWhitespace, truncateText, isLikelyBlockedText } from '../utils/normalize.js';
+import { hostIsPrivate } from '../utils/ssrf.js';
+
+const LOW_POWER_DEVICE = process.env.LOW_POWER_DEVICE === 'true';
+// Randomized human-like linger + scroll before closing a fetched browser page.
+// Env: BROWSER_FETCH_CLOSE_DELAY_MS = single ms or "min,max". Default scales
+// down on low-power (ARM) devices.
+function browserFetchCloseDelay() {
+  const v = process.env.BROWSER_FETCH_CLOSE_DELAY_MS;
+  if (v) {
+    if (v.includes(',')) {
+      const [a, b] = v.split(',').map(Number);
+      if (Number.isFinite(a) && Number.isFinite(b) && a >= 0 && b >= 0) return [a, Math.max(a, b)];
+    } else {
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
+  }
+  return LOW_POWER_DEVICE ? [1200, 3000] : [2500, 6000];
+}
 
 export class PageFetcher {
   constructor({ proxyRouter, browserPool, artifactStore }) {
@@ -86,22 +105,11 @@ export class PageFetcher {
     try {
       const u = new URL(url);
       if (!['http:', 'https:'].includes(u.protocol)) return false;
-      let h = u.hostname;
-      if (!h) return false;
-      // Strip square brackets from IPv6 hostnames (e.g. "[::1]" -> "::1")
-      if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
-      if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return false;
-      if (h.startsWith('192.168.')) return false;
-      if (h.startsWith('10.')) return false;
-      if (h.startsWith('172.16.') || h.startsWith('172.17.') || h.startsWith('172.18.') ||
-          h.startsWith('172.19.') || h.startsWith('172.2') || h.startsWith('172.30') || h.startsWith('172.31')) return false;
-      if (h === '169.254.169.254') return false;
-      if (h === '0.0.0.0') return false;
-      if (h.startsWith('fc') || h.startsWith('fd')) return false; // IPv6 Unique Local Address (fc00::/7)
-      if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return false; // IPv6 Link-Local (fe80::/10)
-      if (h.endsWith('.internal') || h.endsWith('.local')) return false;
-      if (h === 'host.docker.internal') return false;
-      return true;
+      if (!u.hostname) return false;
+      // hostIsPrivate covers numeric/hex/octal/mapped IP literals and internal
+      // hostnames. Public domains pass here; DNS resolution is re-checked in
+      // fetchWithTimeout via assertPublicHost (DNS-rebinding guard).
+      return !hostIsPrivate(u.hostname);
     } catch {
       return false;
     }
@@ -152,14 +160,36 @@ export class PageFetcher {
 
   async fetchPdf(url, resp, { maxChars, proxy } = {}) {
     const MAX_PDF_BYTES = 50 * 1024 * 1024;
+    const PDF_BODY_TIMEOUT_MS = 30000;
     const chunks = [];
     let totalBytes = 0;
-    for await (const chunk of resp.body) {
-      totalBytes += chunk.length;
-      if (totalBytes > MAX_PDF_BYTES) {
-        return this.failure(url, 'http', 'PDF_TOO_LARGE', `PDF exceeds ${MAX_PDF_BYTES} bytes`, proxy);
+    let pdfTimerId;
+    try {
+      await Promise.race([
+        (async () => {
+          for await (const chunk of resp.body) {
+            totalBytes += chunk.length;
+            if (totalBytes > MAX_PDF_BYTES) {
+              throw Object.assign(new Error(`PDF exceeds ${MAX_PDF_BYTES} bytes`), { code: 'PDF_TOO_LARGE' });
+            }
+            chunks.push(chunk);
+          }
+        })(),
+        new Promise((_, reject) => {
+          pdfTimerId = setTimeout(() => {
+            if (resp.body && typeof resp.body.cancel === 'function') resp.body.cancel().catch(() => {});
+            reject(Object.assign(new Error('PDF body read timed out'), { code: 'PDF_BODY_TIMEOUT' }));
+          }, PDF_BODY_TIMEOUT_MS);
+          if (pdfTimerId?.unref) pdfTimerId.unref();
+        })
+      ]);
+    } catch (err) {
+      if (err.code === 'PDF_TOO_LARGE' || err.code === 'PDF_BODY_TIMEOUT') {
+        return this.failure(url, 'http', err.code, err.message, proxy);
       }
-      chunks.push(chunk);
+      throw err;
+    } finally {
+      clearTimeout(pdfTimerId);
     }
     const buffer = Buffer.concat(chunks);
     if (buffer.length < 5 || !buffer.slice(0, 5).toString().startsWith('%PDF')) {
@@ -202,7 +232,12 @@ export class PageFetcher {
 
   async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs } = {}) {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
-    return await this.browserPool.withPage({ proxyProfile, url }, async (page) => {
+    return await this.browserPool.withPage({
+      proxyProfile,
+      url,
+      closeDelayMs: browserFetchCloseDelay(),
+      timeoutMs: (timeoutMs || CONFIG.browserTimeoutMs) + 15000
+    }, async (page) => {
       // Block slow, content-free resources — text extraction doesn't need them
       await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico|avif|woff2?|eot|ttf|otf|mp4|webm|mp3|mpeg)(\?|$)/i, route => route.abort().catch(() => {}));
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs || CONFIG.browserTimeoutMs });

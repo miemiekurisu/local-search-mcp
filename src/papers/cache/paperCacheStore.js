@@ -75,7 +75,7 @@ export class PaperCacheStore {
     const tmpPath = filePath + '.part.' + crypto.randomBytes(4).toString('hex');
     fs.writeFileSync(tmpPath, data);
     fs.renameSync(tmpPath, filePath);
-    const id = this.manifest.addEntry({
+    const id = await this.manifest.addEntry({
       paper_key: paperKey,
       identifier_type: metadata.identifier_type || null,
       identifier_value: metadata.identifier_value || null,
@@ -102,7 +102,7 @@ export class PaperCacheStore {
     ensureDir(path.dirname(filePath));
     fs.writeFileSync(filePath, text, 'utf8');
     const hash = this._contentHash(Buffer.from(text, 'utf8'));
-    const id = this.manifest.addEntry({
+    const id = await this.manifest.addEntry({
       paper_key: paperKey,
       identifier_type: metadata.identifier_type || null,
       identifier_value: metadata.identifier_value || null,
@@ -120,22 +120,22 @@ export class PaperCacheStore {
     return this.manifest.getItem(id);
   }
 
-  storeSections(paperKey, sections, metadata = {}) {
-    return this._storeJson('sections', paperKey, sections, metadata);
+  async storeSections(paperKey, sections, metadata = {}) {
+    return await this._storeJson('sections', paperKey, sections, metadata);
   }
 
-  storeChunks(paperKey, chunks, metadata = {}) {
-    return this._storeJson('chunks', paperKey, chunks, metadata);
+  async storeChunks(paperKey, chunks, metadata = {}) {
+    return await this._storeJson('chunks', paperKey, chunks, metadata);
   }
 
-  _storeJson(variant, paperKey, data, metadata = {}) {
+  async _storeJson(variant, paperKey, data, metadata = {}) {
     if (!this.enabled) return null;
     const filePath = this._fileForVariant(variant, paperKey, null);
     ensureDir(path.dirname(filePath));
     const json = JSON.stringify(data, null, 2);
     fs.writeFileSync(filePath, json, 'utf8');
     const hash = this._contentHash(Buffer.from(json, 'utf8'));
-    return this.manifest.addEntry({
+    return await this.manifest.addEntry({
       paper_key: paperKey,
       variant,
       content_hash: hash,
@@ -147,24 +147,24 @@ export class PaperCacheStore {
     });
   }
 
-  readRaw(entryId) {
+  async readRaw(entryId) {
     const entry = this.manifest.getItem(entryId);
     if (!entry || !fs.existsSync(entry.file_path)) return null;
-    this.manifest.touch(entryId);
+    await this.manifest.touch(entryId);
     return { data: fs.readFileSync(entry.file_path), entry };
   }
 
-  readText(entryId) {
+  async readText(entryId) {
     const entry = this.manifest.getItem(entryId);
     if (!entry || !fs.existsSync(entry.file_path)) return null;
-    this.manifest.touch(entryId);
+    await this.manifest.touch(entryId);
     return { data: fs.readFileSync(entry.file_path, 'utf8'), entry };
   }
 
-  readJson(entryId) {
+  async readJson(entryId) {
     const entry = this.manifest.getItem(entryId);
     if (!entry || !fs.existsSync(entry.file_path)) return null;
-    this.manifest.touch(entryId);
+    await this.manifest.touch(entryId);
     return { data: JSON.parse(fs.readFileSync(entry.file_path, 'utf8')), entry };
   }
 
@@ -182,7 +182,7 @@ export class PaperCacheStore {
     return { enabled: true, ...this.manifest.stats() };
   }
 
-  cleanupItems(items, dryRun = true) {
+  async cleanupItems(items, dryRun = true) {
     const removed = [];
     for (const item of items) {
       if (item.pinned) continue;
@@ -190,7 +190,7 @@ export class PaperCacheStore {
         if (fs.existsSync(item.file_path)) {
           if (!dryRun) fs.unlinkSync(item.file_path);
         }
-        if (!dryRun) this.manifest.deleteEntry(item.id);
+        if (!dryRun) await this.manifest.deleteEntry(item.id);
         removed.push({ id: item.id, file_path: item.file_path, variant: item.variant, dry_run: dryRun });
       } catch (err) {
         console.error(`[cache-cleanup] failed to remove ${item.id}: ${err.message}`);
