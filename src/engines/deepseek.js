@@ -26,6 +26,7 @@ export async function searchDeepSeek(query, opts = {}) {
     reuseSession: true,
     closeDelayMs: [5000, 9000]
   }, async (page) => {
+    await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: CONFIG.browserTimeoutMs || 45000 });
     try {
       await page.waitForSelector(COMPOSER_SELECTOR, { timeout: 30000 });
     } catch {
