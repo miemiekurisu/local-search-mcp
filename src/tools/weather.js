@@ -398,7 +398,7 @@ function formatWeather(loc, data) {
 
 function formatLocationOptions(results) {
   const lines = [
-    '📍 找到多个同名地点，请选择:',
+    '📍 找到多个同名地点，请选择（选择后请再次调用 get_weather 用所选坐标或更精确名称查询）:',
     ''
   ];
   const isChinese = /[\u4e00-\u9fff]/.test(results[0]?.name || '');
@@ -421,7 +421,7 @@ function formatLocationOptions(results) {
     lines.push(`${i + 1}. ${r.name} (${region}, ${country})  坐标: ${lat}, ${lon}`);
   }
   lines.push('');
-  lines.push('请用更精确的名称重新查询（例如加国家/地区："London, UK"、"Portland, Oregon"），或直接使用上方坐标查询，例如 "51.51, -0.13"。');
+  lines.push('请选择与需求最匹配的编号，然后【再次调用 get_weather】，用该编号对应的坐标（如 "45.53, -122.70"）或更精确的名称重新查询，以获得该地点的天气。');
   return lines.join('\n');
 }
 
