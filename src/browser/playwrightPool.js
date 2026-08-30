@@ -84,29 +84,56 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Simulate human browsing before closing a page: randomized scroll steps with
-// occasional mouse-hover pauses. Makes page open/close cadence look organic and
-// helps avoid bot detection. Duration is bounded by the caller-provided
-// closeDelayMs; steps are jittered and scaled down on low-power (ARM) devices.
+// Simulate human browsing before closing a page: multi-step scrolling (with the
+// occasional small scroll-back as a reader re-reads), mouse trails, hovering
+// over links, and clicking neutral page margins. Makes open/close cadence look
+// organic and helps avoid bot detection. Duration bounded by caller's
+// closeDelayMs; actions are randomized and scaled down on low-power (ARM) devices.
 async function simulateBrowsing(page, durationMs) {
   if (!BROWSER_SIMULATE_BROWSING || !durationMs || !page || page.isClosed()) return;
   const start = Date.now();
   let y = 0;
+  const maxY = 5000;
   try {
     while (Date.now() - start < durationMs) {
       if (page.isClosed()) break;
-      const delta = 120 + Math.floor(Math.random() * 380);
-      y += delta;
-      await page.mouse.wheel(0, delta);
-      if (Math.random() < 0.4) {
-        await page.mouse.move(150 + Math.random() * 350, 80 + Math.random() * 240, { steps: 3 });
+      const roll = Math.random();
+      try {
+        if (roll < 0.35) {
+          // scroll down
+          const delta = 200 + Math.floor(Math.random() * 500);
+          y = Math.min(maxY, y + delta);
+          await page.mouse.wheel(0, delta);
+        } else if (roll < 0.45) {
+          // scroll back up a bit (re-reading)
+          const delta = -(100 + Math.floor(Math.random() * 250));
+          y = Math.max(0, y + delta);
+          await page.mouse.wheel(0, delta);
+        } else if (roll < 0.6) {
+          // mouse trail
+          await page.mouse.move(150 + Math.random() * 400, 100 + Math.random() * 300, { steps: 3 + Math.floor(Math.random() * 4) });
+        } else if (roll < 0.8) {
+          // hover a link (no navigation, but very human-looking)
+          const links = page.locator('a[href]');
+          const n = await links.count();
+          if (n > 0) {
+            await links.nth(Math.floor(Math.random() * Math.min(n, 20))).hover().catch(() => {});
+          }
+        } else {
+          // click a neutral page-margin area (avoid link hotspots / popups)
+          const cx = 30 + Math.random() * 110;
+          const cy = 70 + Math.random() * 180;
+          await page.mouse.click(cx, cy, { clickCount: Math.random() < 0.2 ? 2 : 1 });
+        }
+      } catch {
+        // any per-action failure is fine; keep the loop alive
       }
       const pause = BROWSER_SCROLL_DELAY_MIN_MS +
         Math.floor(Math.random() * (BROWSER_SCROLL_DELAY_MAX_MS - BROWSER_SCROLL_DELAY_MIN_MS));
       await page.waitForTimeout(pause);
     }
   } catch {
-    // page may have closed mid-scroll; ignore
+    // page may have closed mid-simulation; ignore
   }
 }
 
