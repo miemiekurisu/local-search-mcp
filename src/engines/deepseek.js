@@ -24,6 +24,9 @@ const TIMEOUT_MS = envInt('DEEPSEEK_TIMEOUT_MS', 150000, 20000);
 // Network can be flaky (long prompts, browser sessions); retry each step so a
 // transient failure does not drop the whole result. Attempts = number of tries.
 const RETRY = envInt('DEEPSEEK_RETRY', 3, 1);
+// DeepSeek web chat cannot handle very long prompts reliably; reject oversized
+// queries up front with a clear error instead of timing out / hanging.
+const MAX_INPUT_CHARS = envInt('DEEPSEEK_MAX_INPUT_CHARS', 2000, 100);
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -155,6 +158,13 @@ async function askDeepSeek(prompt, opts) {
 }
 
 export async function searchDeepSeek(query, opts = {}) {
+  if (query.length > MAX_INPUT_CHARS) {
+    throw new SearchEngineError(
+      'INPUT_TOO_LONG',
+      `DeepSeek query too long (${query.length} chars, max ${MAX_INPUT_CHARS}). Please shorten or split the question.`,
+      { session: 'deepseek', max_input_chars: MAX_INPUT_CHARS }
+    );
+  }
   const prompt1 = VERIFY ? `${query}\n${VERIFY_SUFFIX}` : query;
   const r1 = await withRetry(() => askDeepSeek(prompt1, opts), RETRY, 'deepseek first answer');
 

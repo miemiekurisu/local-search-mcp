@@ -53,6 +53,7 @@ services:
        - DEEPSEEK_TRACE_DIR=${DEEPSEEK_TRACE_DIR:-/data/traces}     # 轨迹存储目录
        - DEEPSEEK_VALIDATE=${DEEPSEEK_VALIDATE:-false}              # 交叉验证：DeepSeek→Google AI→DeepSeek
        - DEEPSEEK_RETRY=${DEEPSEEK_RETRY:-3}                        # 每步失败重试次数（网络不稳定时）
+       - DEEPSEEK_MAX_INPUT_CHARS=${DEEPSEEK_MAX_INPUT_CHARS:-2000} # 输入长度上限，超长直接报错
 
        - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
        - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}
