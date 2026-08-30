@@ -156,7 +156,8 @@ export function createApp(kernelOverride, browserPoolOverride) {
             instructions: [
               'This server provides 8 tools for web search, weather, time, and evidence gathering.',
               'Quick start: use search_web to search DuckDuckGo + Wikipedia (no login needed).',
-              'Add "google", "bing", or "chatgpt" to engines[] for browser-based search.',
+              'Add "google", "bing", "chatgpt", or "deepseek" to engines[] for browser-based search.',
+              'DeepSeek returns full answer + DeepThink reasoning chain (reasoning field) and can self-verify when DEEPSEEK_VERIFY is on.',
               'Use get_weather to get weather forecast for any location.',
               'Use get_time to get current time with timezone support.'
             ].join('\n')
@@ -168,13 +169,13 @@ export function createApp(kernelOverride, browserPoolOverride) {
         const tools = [
           {
             name: 'search_web',
-            description: 'Search DuckDuckGo, Wikipedia, or custom HTML engines. Returns up to 20 search results. To use Google/Bing/ChatGPT, specify them explicitly in engines[] — they require prior login via noVNC (http://localhost:6082).',
+            description: 'Search DuckDuckGo, Wikipedia, or browser engines. Returns up to 20 search results. To use Google/Bing/ChatGPT/DeepSeek, specify them in engines[] explicitly — Google/Bing/ChatGPT need prior login via noVNC (http://localhost:6082); DeepSeek needs a logged-in chat.deepseek.com session. DeepSeek results include the full answer (snippet), the DeepThink reasoning chain (reasoning), and optional self-verification.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: { type: 'string', description: 'Search query' },
                 limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Max results (default: 10)' },
-                engines: { type: 'array', items: { type: 'string' }, description: 'Engines: default uses DuckDuckGo + Wikipedia. Add "google", "bing", or "chatgpt".' },
+                engines: { type: 'array', items: { type: 'string' }, description: 'Engines: default uses DuckDuckGo + Wikipedia. Add "google", "bing", "chatgpt", or "deepseek".' },
                 proxy_profile: { type: 'string', description: 'Proxy profile name' }
               },
               required: ['query']

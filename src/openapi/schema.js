@@ -12,7 +12,7 @@ export function buildOpenApiSpec(baseUrl) {
         post: {
           operationId: 'search_web',
           summary: 'Search the web and optionally fetch pages',
-          description: 'Search DuckDuckGo, Wikipedia, or browser engines (Google/Bing/ChatGPT). Returns search results with snippets. By default auto-fetches full text from top results (fetch_top_k=5). For additional pages beyond the default, call fetch_page on specific URLs from the results, or increase fetch_top_k.',
+          description: 'Search DuckDuckGo, Wikipedia, or browser engines (Google/Bing/ChatGPT/DeepSeek). Returns search results with snippets. By default auto-fetches full text from top results (fetch_top_k=5). For additional pages beyond the default, call fetch_page on specific URLs from the results, or increase fetch_top_k. DeepSeek results include the full answer (snippet), the DeepThink reasoning chain (reasoning field), and optional self-verification.',
           requestBody: {
             required: true,
             content: {
@@ -23,7 +23,7 @@ export function buildOpenApiSpec(baseUrl) {
                   properties: {
                     query: { type: 'string', description: 'Search query.' },
                     limit: { type: 'integer', minimum: 1, maximum: 20, default: 10, description: 'Max search results.' },
-                    engines: { type: 'array', items: { type: 'string' }, description: 'Engine list: duckduckgo, wikipedia, google, bing, chatgpt.' },
+                    engines: { type: 'array', items: { type: 'string' }, description: 'Engine list: duckduckgo, wikipedia, google, bing, chatgpt, deepseek.' },
                     fetch_top_k: { type: 'integer', minimum: 0, maximum: 20, default: 5, description: 'Number of top results to fetch full text (0 = skip fetching). Default 5 fetches ~5 top pages.' },
                     fetch_mode: { type: 'string', enum: ['auto', 'http', 'browser'], default: 'auto', description: 'Fetch mode for full text extraction.' },
                     max_chars_total: { type: 'integer', minimum: 2000, maximum: 100000, default: 30000, description: 'Total character budget across all fetched pages.' },

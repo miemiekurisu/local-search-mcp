@@ -19,7 +19,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
         '',
         'Quick start:',
         '  - Use search_web to search DuckDuckGo + Wikipedia via HTTP (no login, no browser needed).',
-        '  - To use Google, Bing, or ChatGPT, add them to engines[] explicitly.',
+        '  - To use Google, Bing, ChatGPT, or DeepSeek, add them to engines[] explicitly.',
         '  - Browser-dependent engines require prior login via the noVNC browser.',
         '  - The browser is automatically closed after each query. It only stays open when CAPTCHA/manual intervention is needed.',
         '  - Use fetch_page to extract clean text from any URL. Supports HTML pages (mode:"auto" falls back to Playwright for JS-rendered sites like mp.weixin.qq.com) and PDF files (automatic text extraction).',
@@ -72,7 +72,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
   }
 
   function browserEngines(args) {
-    return args?.engines?.filter?.(e => e === 'google' || e === 'bing' || e === 'chatgpt') || [];
+    return args?.engines?.filter?.(e => e === 'google' || e === 'bing' || e === 'chatgpt' || e === 'deepseek') || [];
   }
 
   async function closeBrowserAfterSearch(args) {
@@ -89,11 +89,11 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
 
   server.registerTool('search_web', {
     title: 'Search the Web',
-    description: 'Search DuckDuckGo, Wikipedia, or custom HTML engines. Returns up to 20 search results with snippets. Can optionally auto-fetch full text from top results via fetch_top_k. To use Google/Bing/ChatGPT, specify them explicitly in engines[] — they require prior login via noVNC (http://localhost:6082). No paid API required.',
+    description: 'Search DuckDuckGo, Wikipedia, or browser engines. Returns up to 20 search results with snippets. Can optionally auto-fetch full text from top results via fetch_top_k. To use Google/Bing/ChatGPT/DeepSeek, specify them in engines[] — Google/Bing/ChatGPT need prior login via noVNC (http://localhost:6082); DeepSeek needs a logged-in chat.deepseek.com session. DeepSeek results include the full answer (snippet), the DeepThink reasoning chain (reasoning field), and optional self-verification. No paid API required.',
     inputSchema: {
       query: z.string().min(1).describe('Search query'),
       limit: z.number().int().min(1).max(20).optional().describe('Max results (default: 10, max: 20)'),
-      engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (HTTP, no login). Add "google", "bing", or "chatgpt" explicitly if logged in.'),
+      engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (HTTP, no login). Add "google", "bing", "chatgpt", or "deepseek" explicitly if logged in.'),
       fetch_top_k: z.number().int().min(0).max(20).optional().describe('Number of top results to auto-fetch full text (0 = skip fetching). Default 0. Use search_and_fetch for fetching with results.'),
       fetch_mode: z.enum(['auto', 'http', 'browser']).optional().describe('Fetch mode for full text extraction when fetch_top_k > 0. auto=try HTTP then browser fallback.'),
       proxy_profile: z.string().optional().describe('Proxy profile name (default: "auto")')
