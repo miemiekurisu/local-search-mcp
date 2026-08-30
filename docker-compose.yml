@@ -49,6 +49,8 @@ services:
        - DEEPSEEK_MAX_REASONING=${DEEPSEEK_MAX_REASONING:-8000}     # 思考链长度
        - DEEPSEEK_VERIFY=${DEEPSEEK_VERIFY:-false}                  # prompt 层自我验证
        - DEEPSEEK_TIMEOUT_MS=${DEEPSEEK_TIMEOUT_MS:-150000}         # 等待回复超时
+       - DEEPSEEK_TRACE_ENABLED=${DEEPSEEK_TRACE_ENABLED:-false}    # 保存对话轨迹（prompt/思考/回答）
+       - DEEPSEEK_TRACE_DIR=${DEEPSEEK_TRACE_DIR:-/data/traces}     # 轨迹存储目录
 
        - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
        - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}

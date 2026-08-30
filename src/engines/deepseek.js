@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { CONFIG } from '../config/index.js';
 import { SearchEngineError, makeResult } from './base.js';
 
@@ -18,6 +20,25 @@ const INCLUDE_REASONING = process.env.DEEPSEEK_INCLUDE_REASONING !== 'false';
 const MAX_REASONING = envInt('DEEPSEEK_MAX_REASONING', 8000, 0);
 const VERIFY = process.env.DEEPSEEK_VERIFY === 'true';
 const TIMEOUT_MS = envInt('DEEPSEEK_TIMEOUT_MS', 150000, 20000);
+// Conversation-trajectory capture: when enabled, each completed DeepSeek turn
+// (prompt / reasoning / answer) is appended to a JSONL file for later processing.
+const TRACE_ENABLED = process.env.DEEPSEEK_TRACE_ENABLED === 'true';
+const TRACE_DIR = process.env.DEEPSEEK_TRACE_DIR || '/data/traces';
+
+function saveTrace(record) {
+  if (!TRACE_ENABLED) return;
+  try {
+    const dir = TRACE_DIR;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(
+      path.join(dir, 'deepseek_traces.jsonl'),
+      JSON.stringify(record) + '\n',
+      'utf8'
+    );
+  } catch (err) {
+    console.error('[deepseek] trace save failed:', err.message);
+  }
+}
 
 // When VERIFY is on, ask DeepSeek to separate established facts from inference,
 // cite evidence for key data, and flag uncertainty — so the output is checkable.
@@ -110,6 +131,17 @@ export async function searchDeepSeek(query, opts = {}) {
     }
     result.answer_chars = last.answer.length;
     result.verify_requested = VERIFY;
+    if (TRACE_ENABLED) {
+      saveTrace({
+        timestamp: new Date().toISOString(),
+        engine: 'deepseek',
+        query,
+        prompt,
+        answer: last.answer,
+        reasoning: last.reasoning || '',
+        verify: VERIFY
+      });
+    }
     return [result];
   });
 }
