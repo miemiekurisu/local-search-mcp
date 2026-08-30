@@ -27,11 +27,15 @@ services:
        - no_proxy=${no_proxy:-}
        - LAN_PROXY_SERVER=${LAN_PROXY_SERVER:-}
 
-       # Browser concurrency & timeouts (ARM 建议调小并发、调大超时)
+       # Browser concurrency & timeouts. 低内存/ARM 设备在 .env 设
+       # LOW_POWER_DEVICE=true，并把并发降到 1（MAX_CONCURRENT_PAGES/MAX_SESSION_CONTEXTS/MAX_FETCH_CONCURRENCY）。
+       - LOW_POWER_DEVICE=${LOW_POWER_DEVICE:-false}
        - MAX_CONCURRENT_PAGES=${MAX_CONCURRENT_PAGES:-2}
+       - MAX_SESSION_CONTEXTS=${MAX_SESSION_CONTEXTS:-1}
        - BROWSER_TIMEOUT_MS=${BROWSER_TIMEOUT_MS:-45000}
        - EXISTING_CHROME_CONNECT_TIMEOUT_MS=${EXISTING_CHROME_CONNECT_TIMEOUT_MS:-60000}
        - MAX_FETCH_CONCURRENCY=${MAX_FETCH_CONCURRENCY:-3}
+       - BROWSER_SIMULATE_BROWSING=${BROWSER_SIMULATE_BROWSING:-true}
 
        - CHATGPT_EMAIL=${CHATGPT_EMAIL:-}
        - CHATGPT_PASSWORD=${CHATGPT_PASSWORD:-}
@@ -69,7 +73,11 @@ services:
        - ./config:/app/config
     extra_hosts:
        - "host.docker.internal:host-gateway"
-    shm_size: "1gb"
+    # 资源上限由 .env 控制（MEM_LIMIT / CPUS_LIMIT）。默认 0 = 不限制。
+    # 低内存/ARM 设备建议在 .env 设 MEM_LIMIT=2g, CPUS_LIMIT=4。
+    shm_size: "${SHM_SIZE:-1gb}"
+    mem_limit: "${MEM_LIMIT:-0}"
+    cpus: "${CPUS_LIMIT:-0}"
     restart: unless-stopped
     healthcheck:
        test: ["CMD", "sh", "-c", "curl -sf http://localhost:8765/health"]
