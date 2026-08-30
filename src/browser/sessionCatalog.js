@@ -13,6 +13,13 @@ export const BROWSER_SESSION_CATALOG = {
     homeUrl: 'https://www.google.com/?hl=en',
     loginUrl: 'https://accounts.google.com/'
   },
+  deepseek: {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    engine: 'deepseek',
+    homeUrl: 'https://chat.deepseek.com',
+    loginUrl: 'https://chat.deepseek.com'
+  },
   bing: {
     id: 'bing',
     label: 'Bing',

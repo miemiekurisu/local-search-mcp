@@ -6,10 +6,11 @@ import { searchBing } from './bing.js';
 import { searchGoogle } from './google.js';
 import { searchWikipedia } from './wikipedia.js';
 import { searchChatGPT } from './chatgpt.js';
+import { searchDeepSeek } from './deepseek.js';
 import { searchCustomHtml } from './custom_html.js';
 import { searchWithFallbacks } from './api_fallback.js';
 
-const CHROMIUM_ONLY_ENGINES = new Set(['google', 'chatgpt']);
+const CHROMIUM_ONLY_ENGINES = new Set(['google', 'chatgpt', 'deepseek']);
 
 export class EngineRegistry {
   constructor({ proxyRouter, browserPool }) {
@@ -25,6 +26,7 @@ export class EngineRegistry {
       { id: 'wikipedia', builtin: true },
       { id: 'google', builtin: true, chromium_only: true, session: 'google', note: 'via visible Chromium + reusable browser session' },
       { id: 'chatgpt', builtin: true, chromium_only: true, session: 'chatgpt', note: 'via Chrome DevTools MCP + reusable browser session' },
+      { id: 'deepseek', builtin: true, chromium_only: true, session: 'deepseek', note: 'via visible Chromium + reusable browser session' },
       ...this.customEngines.map(e => ({ id: e.id, builtin: false, type: e.type || 'html' }))
     ];
   }
@@ -46,6 +48,7 @@ export class EngineRegistry {
     if (engine === 'wikipedia') return await searchWikipedia(query, baseOpts);
     if (engine === 'google') return await searchGoogle(query, baseOpts);
     if (engine === 'chatgpt') return await searchChatGPT(query, baseOpts);
+    if (engine === 'deepseek') return await searchDeepSeek(query, baseOpts);
     const custom = this.customEngines.find(e => e.id === engine);
     if (custom) return await searchCustomHtml(custom, query, baseOpts);
     throw new Error(`unknown engine: ${engine}`);
@@ -61,7 +64,7 @@ export class EngineRegistry {
     
     for (const engine of engines) {
       try {
-        const timeout = engine === 'chatgpt' ? 180000 : engine === 'google' ? 150000 : engine === 'bing' ? 60000 : 20000;
+        const timeout = engine === 'chatgpt' ? 180000 : engine === 'google' ? 150000 : engine === 'deepseek' ? 160000 : engine === 'bing' ? 60000 : 20000;
         const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit: poolLimit }), timeout);
         all.push(...results);
       } catch (err) {
