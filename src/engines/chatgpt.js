@@ -191,7 +191,9 @@ async function getChatState(client) {
       assistantCount: assistantNodes.length,
       latestAssistantText: latestAssistant instanceof HTMLElement ? latestAssistant.innerText.trim() : '',
       latestTurnActionLabels,
-      latestTurnHasCompletionActions
+      latestTurnHasCompletionActions,
+      notLoggedIn: /sign up for free/i.test(document.body?.innerText || ''),
+      loginIntercept: /sign in is required to continue|sign in to continue/i.test(document.body?.innerText || '')
     };
   }`);
 }
@@ -299,6 +301,14 @@ async function waitForAssistantReply(client, baselineCount) {
 
         lastSeen = latest;
       }
+    } else if (state.loginIntercept) {
+      throw new SearchEngineError(
+        'LOGIN_REQUIRED',
+        'ChatGPT 未登录，发送后被要求登录。请通过 noVNC（远程浏览器，端口 6082）打开 chatgpt 会话，手动完成登录后保存会话，再重试。',
+        chatGptErrorDetails({
+          retry_hint: 'Open the chatgpt session in noVNC (port 6082), sign in to ChatGPT in the visible Chromium, save the session, then retry.'
+        })
+      );
     } else if (!state.composerVisible && (state.url.includes('/auth/') || isChallengeState(state))) {
       throw classifyLoginFailure(state);
     }
@@ -315,6 +325,15 @@ export async function searchChatGPT(query) {
 
     await ensureSelectedChatPage(client);
     const readyState = await waitForComposer(client, 30000);
+    if (readyState.notLoggedIn) {
+      throw new SearchEngineError(
+        'LOGIN_REQUIRED',
+        'ChatGPT 未登录，无法使用。请通过 noVNC（远程浏览器，端口 6082）打开 chatgpt 会话，手动完成登录后保存会话，再重试。',
+        chatGptErrorDetails({
+          retry_hint: 'Open the chatgpt session in noVNC (port 6082), sign in to ChatGPT in the visible Chromium, save the session, then retry.'
+        })
+      );
+    }
     const baselineCount = Number(readyState.assistantCount || 0);
 
     await sendPrompt(client, query);
