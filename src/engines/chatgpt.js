@@ -14,6 +14,7 @@ const CHAT_COMPOSER_PATTERNS = [
 
 const SEND_BUTTON_PATTERNS = [
   /uid=([^\s]+)\s+button\s+"Send prompt"/i,
+  /uid=([^\s]+)\s+button\s+"Send message"/i,
   /uid=([^\s]+)\s+button\s+"Send"/i
 ];
 
@@ -174,8 +175,9 @@ async function getChatState(client) {
     }
 
     const composer =
-      document.querySelector('div[contenteditable="true"][id*="prompt-textarea"]') ||
+      document.querySelector('textarea[id*="prompt"], textarea[class*="composer"], div[contenteditable="true"][id*="prompt-textarea"]') ||
       document.querySelector('div[contenteditable="true"][role="textbox"]') ||
+      document.querySelector('textarea[aria-label*="Chat"]') ||
       document.querySelector('.ProseMirror[contenteditable="true"]');
     const stopButton =
       document.querySelector('button[data-testid="stop-button"]') ||
