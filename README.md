@@ -1,296 +1,160 @@
 # local-search-mcp
 
-> **该手册由AI生成，可能存在错误，请以实际代码为准。**
+**Give your local LLM agent access to the web — without requiring a paid search API.**
+
+A self-hosted MCP server for web search, page retrieval, browser-backed search and multi-query research. Built for local LLM agents and coding agents that need fresh information without relying on a commercial Search API.
+
+[简体中文](README.zh-CN.md)
 
 ---
 
-## ⚠️ 安全警告
+## Why?
 
-**本项目设计用于内网部署及个人使用。**
+Local models can be surprisingly capable at coding and reasoning, but they often struggle when the answer depends on information outside their training data:
 
-- **请勿将本服务直接暴露到公网**。服务包含浏览器远程访问（noVNC）功能，一旦暴露到公网将导致登录凭据泄露、会话劫持等严重安全风险。
-- 如果必须暴露到公网，**务必**：
-  1. 设置 `MCP_BEARER_TOKEN` 启用 Bearer Token 认证
-  2. 设置强密码 `NOVNC_PASSWORD` 并限制 `NOVNC_LISTEN_HOST=127.0.0.1`
-  3. 使用反向代理（如 Nginx/Caddy）并配置 HTTPS
-  4. 使用防火墙限制访问 IP
-- **免责声明：本项目为开源软件，作者不对使用该应用造成的任何后果和损失承担任何责任。使用者应自行承担安全风险，包括但不限于数据泄露、账户被盗、服务被滥用等。**
+- recent library or framework changes
+- obscure GitHub issues and error reports
+- current documentation
+- niche technical problems
+- newly released models or software
+- facts that need external verification
+
+`local-search-mcp` gives an MCP-capable agent tools to search the web, read pages, collect evidence, and keep reasoning with fresh information.
+
+> **No paid search API is required for the core search workflow.**
 
 ---
 
-## 项目简介
+## What it does
 
-**Local Search & Web Evidence MCP 服务** 是一个单容器部署的本地搜索和网页抓取工具，为 AI Agent 提供 MCP（Model Context Protocol）和 HTTP 接口。
-
-### 核心特性
-
-- **无需付费 API**：内置 DuckDuckGo、Bing、Wikipedia、Google、DeepSeek 等搜索引擎，不依赖任何付费搜索服务
-- **多引擎搜索**：支持 DuckDuckGo（HTTP）、Wikipedia（HTTP）、Google（浏览器）、Bing（浏览器）、ChatGPT（浏览器）、DeepSeek（浏览器）
-- **DeepSeek 深度回答**：返回完整答案 + DeepThink 思考链，可选 prompt 层自我验证（区分确凿事实/推断、标注不确定性）
-- **网页抓取**：HTTP 抓取失败自动回退到浏览器渲染，支持 SPA 页面
-- **深度研究**：自动生成查询家族，多引擎并行搜索，返回结构化证据
-- **天气查询**：基于 Open-Meteo API，支持中文地名（自动拼音转换）
-- **时间查询**：支持 UTC、北京时间、东京时间、纽约时间、伦敦时间等多时区
-- **自定义引擎**：支持通过 JSON 配置自定义 HTML 搜索引擎
-- **跨平台**：支持 x86_64（Windows/Linux/macOS）和 ARM64（Linux）
-
-### 架构
-
+```text
+Local LLM / Coding Agent
+          │
+          │ MCP
+          ▼
+┌──────────────────────────────┐
+│       local-search-mcp       │
+├──────────────────────────────┤
+│ Search                       │
+│ Fetch web pages              │
+│ Browser-backed search        │
+│ Multi-query research         │
+│ Optional Web AI sessions     │
+└──────────────────────────────┘
+          │
+          ▼
+Search results + page content + evidence
+          │
+          ▼
+Local agent continues reasoning
 ```
-┌────────────── Docker Container ──────────────┐
-│  Xvfb :99 ──▶ Openbox ──▶ Chromium :9224    │
-│  x11vnc :5900 ──▶ noVNC :6080               │
-│  Node.js (HTTP + MCP) :8765                  │
-│  ├─ /mcp         自定义 JSON-RPC 端点         │
-│  ├─ /mcp-stream  Streamable HTTP             │
-│  ├─ /sse         SSE 服务器推送              │
-│  └─ /health      健康检查                     │
-│  /data (持久化：profile、会话、artifact)        │
-└──────────────────────────────────────────────┘
-```
 
-### 资源适配
-
-单分支部署，低性能设备（如 ARM 开发板）通过 `.env` 节制资源：
-
-| 变量 | 说明 |
-|------|------|
-| `LOW_POWER_DEVICE=true` | 降低并发（页面/会话/fetch 均 1），缩短拟人滚动停顿 |
-| `MEM_LIMIT=2g` | 容器内存上限，防止 Chromium OOM 拖垮宿主 |
+`local-search-mcp` is a server your MCP-capable agent connects to. It is especially useful when your agent is powered by a local model through runtimes such as Ollama, llama.cpp, vLLM or LM Studio.
 
 ---
 
-## 快速开始
+## Who is this for?
+
+`local-search-mcp` is mainly designed for developers who:
+
+- run LLMs locally or self-host their models
+- use local models through coding agents or general-purpose agents
+- want web search without paying for a commercial Search API
+- need current documentation, GitHub issues, release information or niche technical knowledge
+- want their agents to retrieve evidence instead of relying entirely on model memory
+- prefer a self-hosted search/research component
+
+> If your local model is already capable of reasoning about a problem but lacks the information needed to solve it, this project is designed to help bridge that gap.
+
+---
+
+## Why I built this
+
+I use local LLMs for coding, troubleshooting and technical research.
+
+A recurring problem was that the model often had enough reasoning ability to solve a task, but lacked one critical piece of information: a recent API change, an obscure bug report, a GitHub issue, new documentation, or experience shared by another developer.
+
+After giving the agent web search and page retrieval tools, I found that several problems it could not solve offline became solvable through searching, reading and verification.
+
+This project grew out of that workflow.
+
+---
+
+## Features
+
+### Core capabilities
+
+- **Web search** — search the web through multiple available search backends (`search_web`).
+- **Page retrieval** — retrieve readable page content for the agent. HTTP retrieval can optionally fall back to browser rendering for pages that require JavaScript (`fetch_page`).
+- **Search + Fetch** — search first, then retrieve selected result pages and return structured evidence to the agent (`search_and_fetch`).
+- **Multi-query research** — expand a problem into multiple queries, search across sources, retrieve relevant pages and return evidence candidates. It provides research material; the final synthesis remains with the calling agent (`research_problem`).
+
+### Browser-backed sources
+
+For sources that cannot be reached reliably through simple HTTP requests, `local-search-mcp` can use a persistent Chromium browser. Depending on configuration, browser sessions are used for **Bing**, **Google**, **ChatGPT Web** and **DeepSeek Web**.
+
+Some providers require the user to log in manually through the optional noVNC interface. Login state can then be persisted locally.
+
+### Optional Web AI providers
+
+`local-search-mcp` can also interact with supported logged-in AI web sessions through the managed browser. This lets an agent use another web-accessible model as an additional research or problem-solving source.
+
+- **ChatGPT Web** — browser-backed, requires login via noVNC.
+- **DeepSeek Web** — browser-backed, requires a `chat.deepseek.com` login. Retrieves the generated answer (subject to `DEEPSEEK_MAX_SNIPPET`) and, when available, the reasoning text exposed by the DeepSeek web UI. An optional multi-step verification workflow (DeepSeek → Google AI → DeepSeek synthesis) can be enabled.
+
+### Additional tools
+
+- **Weather lookup** — Open-Meteo, free, no key. Supports Chinese place names (e.g. `上海三林`) with automatic disambiguation (`get_weather`).
+- **Time / timezone lookup** — UTC, Beijing, Tokyo, New York, London and more (`get_time`).
+- **Custom HTML search engines** — define your own engines via a JSON config file.
+
+---
+
+## Quick Start
+
+Requirements: Docker and Docker Compose.
 
 ```bash
-# 1. 克隆仓库
 git clone https://github.com/miemiekurisu/local-search-mcp.git
 cd local-search-mcp
-
-# 2. 配置环境变量
 cp .env.example .env
-
-# 3. 一键启动
 docker compose up -d --build
+```
 
-# 4. 验证
+Verify:
+
+```bash
 curl http://localhost:8765/health
-# 返回: {"ok":true}
 ```
 
-低性能设备（如 ARM 开发板）在 `.env` 设置 `LOW_POWER_DEVICE=true`、`MEM_LIMIT=2g` 后启动即可。
-
----
-
-## 环境变量配置
-
-详见 `.env.example`，以下为完整参数说明：
-
-### 网络端口
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `HTTP_LISTEN_HOST` | `0.0.0.0` | MCP 服务监听地址，`0.0.0.0` 表示所有网卡 |
-| `HTTP_LISTEN_PORT` | `8765` | MCP 服务宿主端口 |
-| `NOVNC_LISTEN_HOST` | `127.0.0.1` | noVNC 监听地址，**默认仅本机** |
-| `NOVNC_LISTEN_PORT` | `6082` | noVNC 宿主端口 |
-
-### 代理配置
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `LAN_PROXY_SERVER` | `""` | 搜索引擎 HTTP 代理 |
-| `VISIBLE_BROWSER_PROXY_SERVER` | `""` | Chromium 浏览器代理（`--proxy-server` 参数） |
-| `BROWSER_PROXY_SERVER` | `""` | HTTP profile 代理（proxy_profiles.json） |
-| `VISIBLE_BROWSER_PROXY_BYPASS` | `<-loopback>` | Chromium 代理绕过列表，按站点直连（如 `*deepseek.com`） |
-
-### 安全配置
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `MCP_BEARER_TOKEN` | `""` | Bearer Token，**公网暴露时必须设置** |
-| `NOVNC_PASSWORD` | `""` | noVNC 密码，留空则 noVNC **不启动** |
-| `RATE_LIMIT_MAX_REQUESTS` | `100` | 每 IP 每窗口期最大请求数 |
-| `RATE_LIMIT_WINDOW_MS` | `60000` | 速率限制窗口（毫秒） |
-
-### 搜索引擎
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `CHATGPT_EMAIL` | `""` | ChatGPT 自动登录邮箱 |
-| `CHATGPT_PASSWORD` | `""` | ChatGPT 自动登录密码 |
-
-### DeepSeek 引擎
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `DEEPSEEK_MAX_SNIPPET` | `20000` | 答案返回长度 |
-| `DEEPSEEK_INCLUDE_REASONING` | `true` | 是否保留 DeepThink 思考链 |
-| `DEEPSEEK_MAX_REASONING` | `8000` | 思考链长度 |
-| `DEEPSEEK_VERIFY` | `false` | prompt 层自我验证（区分事实/推断、标注不确定性） |
-| `DEEPSEEK_VALIDATE` | `false` | 交叉验证链：DeepSeek→Google AI→DeepSeek |
-| `DEEPSEEK_RETRY` | `3` | 每步失败重试次数 |
-| `DEEPSEEK_MAX_INPUT_CHARS` | `2000` | 输入长度上限 |
-| `DEEPSEEK_TIMEOUT_MS` | `150000` | 等待回复超时 |
-| `DEEPSEEK_TRACE_ENABLED` | `false` | 保存对话轨迹（JSONL） |
-| `DEEPSEEK_TRACE_DIR` | `/data/traces` | 轨迹存储目录 |
-
-### 学术论文工具
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `ENABLE_PAPER_TOOLS` | `true` | 是否启用论文搜索工具 |
-| `OPENALEX_API_KEY` | `""` | OpenAlex API Key（免费） |
-| `CROSSREF_MAILTO` | `""` | Crossref 邮箱（提高限频） |
-| `UNPAYWALL_EMAIL` | `""` | Unpaywall 邮箱 |
-
-### 其他
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `TIMEZONE` | 服务器时区 | `get_time` 工具默认时区（如 `Asia/Shanghai`） |
-
----
-
-## 功能说明
-
-### 1. 网络搜索
-
-通过 MCP 的 `search_web` 工具或 HTTP 的 `/search` 端点进行多引擎搜索。
-
-```bash
-# MCP 方式
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_web","arguments":{"query":"Rust 编程","limit":5,"engines":["duckduckgo","wikipedia"]}}}'
-
-# HTTP 方式
-curl -s -X POST http://localhost:8765/search \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"Rust 编程","limit":5}'
-```
-
-**搜索引擎列表：**
-
-| 引擎 | 类型 | 需要登录 | 说明 |
-|------|------|----------|------|
-| `duckduckgo` | 浏览器 | 否 | 走可见 Chromium |
-| `wikipedia` | HTTP | 否 | 默认引擎，无需浏览器 |
-| `google` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
-| `bing` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
-| `chatgpt` | 浏览器 | 是 | 需通过 noVNC 登录后保存会话 |
-| `deepseek` | 浏览器 | 是 | 需登录 chat.deepseek.com；返回完整答案+思考链，可交叉验证 |
-
-### 2. 网页抓取
-
-`fetch_page` 工具支持 HTTP 抓取和浏览器渲染两种模式，`mode=auto` 会自动回退。
-
-```bash
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch_page","arguments":{"url":"https://example.com","mode":"auto"}}}'
-```
-
-### 3. 搜索 + 抓取
-
-`search_and_fetch` 先搜索再抓取前 N 个结果的页面内容，返回结构化证据包。
-
-```bash
-curl -s -X POST http://localhost:8765/search_and_fetch \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"AI Agent 框架","limit":10,"fetch_top_k":5}'
-```
-
-### 4. 深度研究
-
-`research_problem` 根据问题描述自动生成查询家族，多引擎并行搜索，返回带置信度的证据候选。
-
-```bash
-curl -s -X POST http://localhost:8765/research_problem \
-  -H 'Content-Type: application/json' \
-  -d '{"problem_signature":{"task":"排查 Docker 构建失败","symptom":"lsetxattr security.capability"},"budget":{"max_queries":3,"max_pages":5}}'
-```
-
-### 5. 天气查询
-
-`get_weather` 工具基于 Open-Meteo API，免费无需 API Key，支持中文地名（自动拼音转换）。
-
-```bash
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_weather","arguments":{"location":"北京"}}}'
-```
-
-支持中文城市名、区县名（如"上海三林"），自动处理多地点消歧。
-
-### 6. 时间查询
-
-`get_time` 工具支持多时区查询：
-
-```bash
-curl -s -X POST http://localhost:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_time","arguments":{"query":"Beijing"}}}'
-```
-
-支持时区：`UTC`、`Beijing`、`Tokyo`、`New York`、`London` 等。
-
-### 7. MCP 工具总览
-
-| 工具 | 说明 |
-|------|------|
-| `search_web` | 多引擎搜索 |
-| `fetch_page` | 网页抓取（HTTP + 浏览器回退） |
-| `search_and_fetch` | 搜索 + 抓取 |
-| `research_problem` | 深度研究 |
-| `get_artifact` | 读取历史 artifact |
-| `engine_status` | 引擎/代理/会话状态 |
-| `get_weather` | 天气查询（Open-Meteo） |
-| `get_time` | 时间查询（多时区） |
-
-### 8. MCP 传输协议
-
-服务提供三种 MCP 传输方式，分别适配不同客户端场景：
-
-| 端点 | 协议 | 适用客户端 | 说明 |
-|------|------|-----------|------|
-| `POST /mcp` | 自定义 JSON-RPC | 普通 HTTP 客户端（curl、浏览器） | 最早实现的端点，每个请求独立 HTTP 往返，无会话状态 |
-| `/* /mcp-stream` | Streamable HTTP | **ChatBox**、MCP SDK 标准客户端 | 遵循 MCP Streamable HTTP 规范（2025-11-25），每个会话独立 McpServer 实例 |
-| `GET /sse` + `POST /messages` | SSE 服务器推送 | **opencode remote** 类型客户端 | 基于 Server-Sent Events 的长连接，服务端主动推送结果 |
-
-**`/mcp-stream` Streamable HTTP 端点：**
-
-此端点遵循 MCP Streamable HTTP 规范，支持多会话并发：
-- 每个 `initialize` 请求创建一个独立的 `McpServer` + `StreamableHTTPServerTransport` 实例
-- 通过 `onsessioninitialized` 回调注册会话到会话表
-- 后续请求通过 `mcp-session-id` 头路由到对应会话
-- 支持 GET（SSE 流）、POST（JSON-RPC）、DELETE（会话终止）
-
-适用于任何支持 Streamable HTTP 的 MCP 客户端，如 **ChatBox**（设置 → MCP → 添加服务器 → 类型 `http`，URL `http://<server-ip>:8765/mcp-stream`）。
-
-**SSE 端点（`/sse`）的引入原因：**
-
-opencode 的 `"type": "remote"` 模式仅支持 SSE 传输（而非 Streamable HTTP），因此需要提供 SSE 端点才能将本服务作为 opencode 的远程 MCP 服务器使用。
-
-SSE 实现要点：
-- 每个 `GET /sse` 连接创建一个独立的 `McpServer` 实例 — 因为 MCP SDK 的 `Protocol.connect()` 每个实例仅支持绑定一个传输通道
-- 每个 SSE 连接的 `send()` 通过 Promise 链串行化 — 防止多个工具处理程序并发写入时 SSE 帧交错损坏 JSON-RPC 消息边界
-- 连接关闭时自动清理对应的 server 和 transport 实例
-
-**opencode 客户端配置示例：**
+Expected:
 
 ```json
-{
-  "mcpServers": {
-    "local-search": {
-      "type": "remote",
-      "url": "http://<server-ip>:8765/sse"
-    }
-  }
-}
+{"ok":true}
 ```
 
-注意：opencode 默认 MCP 远程超时为 5 秒，搜索类操作耗时较长，需要在 opencode 配置中设置 `timeout`：
+---
+
+## Connect your agent
+
+The server exposes three MCP transports:
+
+| Interface     | Recommended for                                  |
+| ------------- | ------------------------------------------------ |
+| `/mcp-stream` | Standard MCP clients (Streamable HTTP)           |
+| `/sse`        | Clients requiring legacy/remote SSE (e.g. opencode `remote`) |
+| `/mcp`        | Direct HTTP/JSON-RPC usage (curl, scripts)       |
+
+> **For most MCP clients, start with `http://localhost:8765/mcp-stream`.**
+
+### Generic MCP client
+
+Add a server with URL `http://<server-ip>:8765/mcp-stream`.
+
+### opencode
+
+opencode's `"type": "remote"` mode uses SSE. Use `http://<server-ip>:8765/sse` and raise the timeout (search can be slow):
+
 ```json
 {
   "mcpServers": {
@@ -303,171 +167,179 @@ SSE 实现要点：
 }
 ```
 
-> **低性能设备（如 ARM 开发板）提示：** 若服务部署在 ARM 等低性能设备上，浏览器搜索（Google、Bing）可能耗时更长。
-> - opencode 侧 `timeout` 建议设为 180-300 秒
-> - 服务端可降低 `MAX_CONCURRENT_PAGES=1`（见 `.env.example`）
-> - 如有条件，建议将 MCP 服务部署到 x86_64 设备以获得更稳定的搜索性能
+On low-power devices (e.g. ARM boards), browser search can take longer — set `timeout` to 180–300 and consider `MAX_CONCURRENT_PAGES=1`.
 
 ---
 
-## noVNC 可视化浏览器
+## Available tools
 
-noVNC 提供容器内 Chromium 浏览器的远程可视化访问，用于手动登录 Google、Bing、ChatGPT 等需要浏览器会话的服务。
+| Tool                | Purpose                                          |
+| ------------------- | ------------------------------------------------ |
+| `search_web`        | Search available web sources                     |
+| `fetch_page`        | Retrieve readable page content                   |
+| `search_and_fetch`  | Search and retrieve selected results             |
+| `research_problem`  | Multi-query evidence collection                  |
+| `get_artifact`      | Retrieve stored research artifacts               |
+| `engine_status`     | Check source/browser availability                |
+| `get_weather`       | Weather lookup (Open-Meteo)                      |
+| `get_time`          | Timezone-aware time lookup                       |
 
-### ⚠️ 安全警告（再次强调）
+---
 
-**noVNC 暴露完整的浏览器会话（含登录态、Cookie、页面内容），存在极大安全隐患。**
+## Search sources
 
-- 默认情况下 noVNC **不启动**（`NOVNC_PASSWORD` 为空）
-- **严禁**将 noVNC 暴露到公网
-- 仅建议在遇到验证码/MFA 需要手动登录时临时启用，使用后立即关闭
-- 如需远程访问 noVNC，请通过 SSH 隧道而非直接暴露端口
+| Engine        | Type     | Login        | Notes                              |
+| ------------- | -------- | ------------ | ---------------------------------- |
+| `duckduckgo`  | HTTP     | no           | Default, no key, no browser        |
+| `wikipedia`   | HTTP     | no           | Default, no key, no browser        |
+| `bing`        | Browser  | no           | Browser-rendered, public search    |
+| `google`      | Browser  | no           | Browser-rendered, public search    |
+| `chatgpt`     | Browser  | yes          | Requires login via noVNC           |
+| `deepseek`    | Browser  | yes          | Requires `chat.deepseek.com` login |
 
-### 启用方法
+The core workflow (`duckduckgo`, `wikipedia`) needs no API key. Optional API-key fallbacks (Brave, Tavily, Exa, Google Custom Search) can be configured; they are used only when a page-based engine fails.
 
-1. 在 `.env` 中设置密码（使用强密码）：
-   ```
-   NOVNC_PASSWORD=your_strong_password_here
-   ```
+---
 
-2. 重启容器：
-   ```bash
-   docker compose up -d
-   ```
+## Browser login & sessions (noVNC)
 
-3. 通过浏览器访问（仅本机）：
-   ```
-   http://localhost:6082/vnc.html
-   ```
+noVNC exposes the container's Chromium through a remote browser UI. It is used to log in manually to providers that need a browser session (e.g. ChatGPT).
 
-### 远程访问 noVNC（推荐 SSH 隧道）
+> noVNC is **disabled by default** (`NOVNC_PASSWORD` empty).
+
+To enable:
 
 ```bash
-# 通过 SSH 隧道转发，不暴露端口到公网
-ssh -L 6082:127.0.0.1:6082 user@server
-# 然后访问 http://localhost:6082/vnc.html
+# in .env
+NOVNC_PASSWORD=your_strong_password_here
 ```
 
-### 登录和手动验证
-
-某些网站（如 Google、ChatGPT）可能触发验证码或 MFA，此时需要通过 noVNC 手动完成验证：
-
-1. 启用 noVNC 并访问 `http://localhost:6082/vnc.html`
-2. 在浏览器中完成登录/验证
-3. 保存会话：
-   ```bash
-   curl -s -X POST http://localhost:8765/browser_sessions/save \
-     -H 'Content-Type: application/json' \
-     -d '{"session":"google"}'
-   ```
-4. 验证完成后立即关闭 noVNC（从 `.env` 删除 `NOVNC_PASSWORD`）
-
-### 降低被拦截建议
-
-- 通过 noVNC 手动登录后保存会话，减少自动登录触发风控的概率
-- 使用代理（设置 `VISIBLE_BROWSER_PROXY_SERVER`）
-- 容器内置 uBlock Origin 扩展，自动拦截广告
-
-### 关闭 noVNC
-
 ```bash
-# 从 .env 中删除或注释掉 NOVNC_PASSWORD 行
-# NOVNC_PASSWORD=
-
-# 重启容器
 docker compose up -d
 ```
 
----
-
-## 安全配置
-
-### Bearer Token 认证
-
-公网暴露时，设置 `MCP_BEARER_TOKEN` 启用认证：
-
-```env
-MCP_BEARER_TOKEN=your-random-secure-token-here
-```
-
-启用后，所有 API 请求（除 `/health`）需携带认证头：
+Open `http://localhost:6082/vnc.html`, complete the login / CAPTCHA / MFA manually, then save the session:
 
 ```bash
-curl -s http://localhost:8765/mcp \
-  -H 'Authorization: Bearer your-random-secure-token-here' \
+curl -s -X POST http://localhost:8765/browser_sessions/save \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+  -d '{"session":"chatgpt"}'
 ```
 
-### 内置安全措施
+For remote access, prefer an SSH tunnel rather than exposing the port:
 
-- **SSRF 防护**：拦截内网/回环/保留地址（含数字/十六进制/IPv4-mapped IP 字面量）、非 http(s) scheme、DNS 重绑定、重定向回内网
-- **路径遍历防护**：artifact 读取限制在 `/data/artifacts/` 内
-- **信息泄露防护**：`/health` 仅返回 `{"ok":true}`，不泄露版本信息
-- **速率限制**：默认 100 请求/分钟/IP，支持自定义
+```bash
+ssh -L 6082:127.0.0.1:6082 user@server
+```
+
+Disable noVNC again by removing `NOVNC_PASSWORD` and restarting the container.
 
 ---
 
-## 数据持久化
+## Configuration
 
-所有数据存储在 `./data` 目录（Docker volume 挂载）：
+Copy `.env.example` to `.env` and adjust as needed. The most common options:
 
-| 目录 | 内容 |
-|------|------|
-| `data/browser-profile` | Chromium 用户目录（登录态、扩展） |
-| `data/browser-state` | 搜索引擎会话快照 |
-| `data/artifacts` | 搜索结果与抓取文本 |
-| `data/cache/papers` | 论文缓存（SQLite + 文件） |
-| `data/traces` | DeepSeek 对话轨迹（`DEEPSEEK_TRACE_ENABLED=true` 时启用） |
+| Variable               | Default | Notes                                  |
+| ---------------------- | ------- | -------------------------------------- |
+| `HTTP_LISTEN_PORT`     | `8765`  | Host port for the MCP server           |
+| `MCP_BEARER_TOKEN`     | `""`    | Bearer token auth (required if public) |
+| `NOVNC_PASSWORD`       | `""`    | noVNC password (empty = noVNC disabled)|
+| `LOW_POWER_DEVICE`     | `false` | Reduce concurrency for low-power hosts |
+| `MEM_LIMIT`            | —       | Container memory cap (e.g. `2g`)       |
 
-### 数据迁移
+See [.env.example](.env.example) for the full configuration reference.
 
-```bash
-# 旧机器打包
-tar czf local-search-data.tar.gz data/
+---
 
-# 新机器解压
-tar xzf local-search-data.tar.gz
-docker compose up -d
+## Architecture
+
+### User perspective
+
+```text
+Agent
+  │
+ MCP
+  ▼
+local-search-mcp
+  ├── HTTP sources (duckduckgo, wikipedia)
+  ├── Chromium sources (bing, google, chatgpt, deepseek)
+  ├── page fetch (HTTP + browser fallback)
+  └── multi-query research
 ```
+
+### Implementation perspective
+
+A single Docker container bundles:
+
+```text
+Docker
+├── Node.js (HTTP + MCP server :8765)
+├── Chromium (:9224, visible browser)
+├── Xvfb :99 ── Openbox
+├── x11vnc :5900 ── noVNC :6080
+└── /data (persisted: profile, sessions, artifacts)
+```
+
+---
+
+## Security
+
+> [!WARNING]
+> This project is designed primarily for local/private-network deployment.
+> Browser sessions may contain authenticated cookies and sensitive data.
+> Do not expose noVNC directly to the public Internet.
+> See [Security](#security) below.
+
+Built-in protections:
+
+- **SSRF guard** — blocks private/loopback/reserved addresses, numeric/hex/IPv4-mapped IP literals, DNS rebinding, non-http(s) schemes and redirects back to private networks.
+- **Path traversal guard** — artifact reads are confined to `/data/artifacts/`.
+- **Rate limiting** — default 100 requests per minute per IP (configurable).
+- **Bearer token auth** — enable with `MCP_BEARER_TOKEN`; all endpoints except `/health` require `Authorization: Bearer <token>`.
+- **Minimal health endpoint** — `/health` returns only `{"ok":true}`.
+
+If you must expose the service publicly, at minimum: set a strong `MCP_BEARER_TOKEN`, set `NOVNC_PASSWORD` and keep `NOVNC_LISTEN_HOST=127.0.0.1`, use HTTPS via a reverse proxy, and firewall the access IPs. This project is open-source software; the author accepts no liability for any consequences of its use.
+
+---
+
+## Data & privacy
+
+All state is persisted under `./data` (Docker volume):
+
+| Directory             | Contents                              |
+| --------------------- | ------------------------------------- |
+| `data/browser-profile`| Chromium user directory (login, extensions) |
+| `data/browser-state`  | Search-engine session snapshots       |
+| `data/artifacts`      | Search results and fetched text       |
+| `data/cache/papers`   | Paper cache (SQLite + files)          |
+| `data/traces`         | DeepSeek conversation traces (when `DEEPSEEK_TRACE_ENABLED=true`) |
+
+Migrate by archiving `data/` and restoring it on the new host before `docker compose up -d`.
+
+---
+
+## What does "free search" mean?
+
+The core workflow does not require a commercial Search API subscription. Some optional browser-backed providers may require a user account, may impose their own usage limits, and remain subject to their respective terms and availability.
+
+---
+
+## Limitations
+
+- Browser-backed search is slower than direct Search APIs.
+- Websites may change their DOM and temporarily break browser integrations.
+- CAPTCHA or MFA may require manual interaction via noVNC.
+- Search quality depends on the selected source.
+- External websites may rate-limit or block automated access.
+- Web evidence can still be incorrect; the calling model should evaluate sources critically.
+- This project does not guarantee that a local model will produce correct answers.
+- Deployment is Docker-based and primarily tested on Linux x86_64. Other Docker-compatible platforms (Windows/macOS via Docker Desktop, Linux ARM64) may work but are not regularly tested.
 
 ---
 
 ## License
 
-本项目采用 **GNU General Public License v3.0 (GPL-3.0)** 协议。
+Licensed under the **GNU General Public License v3.0 (GPL-3.0)**. See [LICENSE](LICENSE) or https://www.gnu.org/licenses/gpl-3.0.html.
 
-完整协议文本见 [LICENSE](LICENSE) 文件，或访问 https://www.gnu.org/licenses/gpl-3.0.html
-
-### 依赖项许可证
-
-本项目使用的第三方库遵循各自的开源协议：
-
-| 库 | 协议 |
-|----|------|
-| Express | MIT |
-| Playwright | Apache-2.0 |
-| @modelcontextprotocol/sdk | MIT |
-| cheerio | MIT |
-| jsdom | MIT |
-| @mozilla/readability | MPL-2.0 |
-| undici | MIT |
-| zod | MIT |
-| html-to-text | BSD-2-Clause |
-| pdf-parse | MIT |
-| tiny-pinyin | MIT |
-| x11vnc | GPL-2.0 |
-| noVNC | MPL-2.0 |
-| Chromium | BSD-3-Clause |
-
-### GPL-3.0 概要
-
-- ✅ 允许自由使用、修改和分发本软件
-- ✅ 允许用于商业用途
-- ⚠️ 修改后的代码必须以相同许可证（GPL-3.0）发布
-- ⚠️ 分发修改版时需提供完整源码
-- ❌ 不提供任何担保，使用者自行承担风险
-
----
-
-*Local Search MCP — 为 AI Agent 提供本地搜索和网页证据获取能力。*
+*Local Search MCP — self-hosted web search and evidence retrieval for local LLM agents.*
