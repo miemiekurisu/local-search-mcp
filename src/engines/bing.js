@@ -64,12 +64,9 @@ export async function searchBing(query, opts = {}) {
 }
 
 async function parseWithHydrationWait(page, limit) {
-  let parsed = [];
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const html = await page.content();
-    parsed = parseBingHtml(html, limit);
-    if (parsed.length > 0) return parsed;
-    await page.waitForTimeout(1000);
-  }
-  return parsed;
+  // Bing 的 rdr=1 变体页在弱机（ARM/低资源）上 hydrate 很慢：networkidle 后
+  // #b_results / li.b_algo 可能 8+ 秒才挂进 DOM。等到结果节点出现再解析。
+  await page.waitForSelector('li.b_algo, #b_results > li', { timeout: 20000 }).catch(() => null);
+  const html = await page.content();
+  return parseBingHtml(html, limit);
 }
