@@ -2,7 +2,7 @@ import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { CONFIG } from './config/index.js';
 import { createKernel } from './app.js';
-import { closeChromeDevtoolsMcpClient } from './browser/chromeDevtoolsMcpClient.js';
+import { gracefulClose } from './lifecycle.js';
 import { createMcpServer } from './mcp/server.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -18,6 +18,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
 
   const rateLimitMap = new Map();
   const RATE_LIMIT_MAX_ENTRIES = 10000;
+  const SWEEP_INTERVAL_MS = Math.max(100, Number(process.env.SWEEP_INTERVAL_MS) || 60000);
   setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of rateLimitMap) {
@@ -32,7 +33,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
         rateLimitMap.set(e[0], e[1]);
       }
     }
-  }, 60000).unref();
+  }, SWEEP_INTERVAL_MS).unref();
 
   function rateLimiter(req, res, next) {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -320,7 +321,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
             break;
           }
           case 'engine_status': {
-            const r = kernel.engineStatus();
+            const r = await kernel.engineStatus();
             result = { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
             break;
           }
@@ -376,6 +377,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
   // (e.g. ChatBox uses StreamableHTTPClientTransport with SSE fallback).
   const MAX_STREAMABLE_SESSIONS = 500;
   const SESSION_TTL_MS = 3600000;
+  const STREAMABLE_SWEEP_INTERVAL_MS = Math.max(100, Number(process.env.SWEEP_INTERVAL_MS) || 60000);
   const streamableSessions = new Map();
   setInterval(() => {
     const now = Date.now();
@@ -386,7 +388,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
         entry.transport.close().catch(() => {});
       }
     }
-  }, 60000).unref();
+  }, STREAMABLE_SWEEP_INTERVAL_MS).unref();
   app.all('/mcp-stream', async (req, res) => {
     try {
       const sessionId = req.headers['mcp-session-id'];
@@ -453,7 +455,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
         entry.server.close().catch(() => {});
       }
     }
-  }, 60000).unref();
+  }, SWEEP_INTERVAL_MS).unref();
 
   app.get('/sse', async (req, res) => {
     try {
@@ -515,7 +517,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
     }
   });
 
-  return { app, kernel, browserPool: actualBrowserPool, mcpServer, sseTransports };
+  return { app, kernel, browserPool: actualBrowserPool, mcpServer, sseTransports, streamableSessions, rateLimitMap };
 }
 
 // ── Top-level entry point (when run directly, not imported) ──
@@ -526,19 +528,22 @@ if (process.argv[1] && (
   const { kernel, browserPool } = createKernel();
   const { app } = createApp(kernel);
   const server = app.listen(CONFIG.port, '0.0.0.0', () => {
+    /* c8 ignore start -- entrypoint listener body runs only in the spawned child process;
+       Windows test hosts cannot deliver graceful signals to a child. */
     server.maxConnections = 50;
     console.log(`[local-search-mcp] HTTP server listening on :${CONFIG.port}`);
     console.log(`[local-search-mcp] MCP JSON-RPC endpoint: http://localhost:${CONFIG.port}/mcp`);
     console.log(`[local-search-mcp] MCP Streamable HTTP endpoint: http://localhost:${CONFIG.port}/mcp-stream`);
     console.log(`[local-search-mcp] MCP SSE transport endpoint: http://localhost:${CONFIG.port}/sse`);
+    /* c8 ignore stop */
   });
 
   async function shutdown() {
+    /* c8 ignore start -- reached only via SIGTERM/SIGINT, undeliverable to children on Windows */
     console.log('[local-search-mcp] shutting down');
-    await closeChromeDevtoolsMcpClient().catch(() => {});
-    await browserPool.close();
-    server.close(() => process.exit(0));
+    await gracefulClose({ browserPool, server, exit: () => process.exit(0) });
   }
+  /* c8 ignore stop */
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 }

@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio';
 import { CONFIG } from '../config/index.js';
-import { fetchWithTimeout } from '../utils/http.js';
+import { fetchWithTimeout, readBodyBounded } from '../utils/http.js';
 import { canonicalUrl, normalizeWhitespace, stripTrackingUrl, uniqueByUrl, isLikelyBlockedText } from '../utils/normalize.js';
 import { makeResult, SearchEngineError } from './base.js';
 
@@ -19,7 +19,13 @@ export async function searchCustomHtml(engineConfig, query, opts = {}) {
     headers: engineConfig.headers || {},
     method: engineConfig.method || 'GET'
   });
-  const html = await resp.text();
+  let html;
+  try {
+    html = await readBodyBounded(resp, { maxBytes: 8 * 1024 * 1024, timeoutMs: 30000 });
+  } catch (err) {
+    const mapped = ['BODY_TOO_LARGE', 'BODY_TIMEOUT'].includes(err.code) ? err.code : `${engineConfig.id}_BODY_ERROR`;
+    throw new SearchEngineError(mapped, err.message);
+  }
   if (!resp.ok) throw new SearchEngineError('ENGINE_HTTP_ERROR', `${engineConfig.id} HTTP ${resp.status}`, { status: resp.status });
   if (isLikelyBlockedText(html)) throw new SearchEngineError('ENGINE_BLOCKED', `${engineConfig.id} appears blocked/captcha`);
   const $ = cheerio.load(html);

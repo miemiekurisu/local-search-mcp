@@ -98,6 +98,7 @@ function loginRequired(page) {
 
 // Read the latest assistant message's answer + DeepThink reasoning chain.
 function readReply(page) {
+  /* c8 ignore start -- body only executes inside the real Chromium page context */
   return page.evaluate(({ answerSel, thinkSel }) => {
     const last = sel => {
       const els = document.querySelectorAll(sel);
@@ -112,6 +113,7 @@ function readReply(page) {
       isGenerating
     };
   }, { answerSel: ANSWER_SELECTOR, thinkSel: THINK_SELECTOR });
+  /* c8 ignore stop */
 }
 
 // Ask DeepSeek once (a fresh chat) for the given prompt.

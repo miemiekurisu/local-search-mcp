@@ -164,8 +164,8 @@ export class PaperContentKernel {
       if (text) {
         const sections = splitTextIntoSections(text.data);
         const chunked = sectionChunker({ sections: sections.map(s => ({ heading: s.heading, text: s.text })) });
-        this.cache.storeSections(paperKey, chunked.sections, { pinned: false });
-        this.cache.storeChunks(paperKey, chunked.chunks, { pinned: false });
+        await this.cache.storeSections(paperKey, chunked.sections, { pinned: false });
+        await this.cache.storeChunks(paperKey, chunked.chunks, { pinned: false });
         return { paper_key: paperKey, cached: true, sections: chunked.sections, chunks: chunked.chunks };
       }
       throw new Error('No content found for this paper key');

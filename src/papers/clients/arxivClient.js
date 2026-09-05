@@ -39,7 +39,11 @@ async function rateLimitedFetch(url, timeoutMs = FETCH_TIMEOUT_MS) {
           signal: controller.signal
         });
         if (!retryResp.ok) {
+          // Defensive: all callers wrap this fetch and fall back, but the throw
+          // itself marks the 429-retry failure for any future direct caller.
+          /* c8 ignore start -- unreachable from public entry points today */
           throw new Error(`arXiv API error: ${retryResp.status} ${retryResp.statusText}`);
+          /* c8 ignore stop */
         }
         return retryResp.text();
       }

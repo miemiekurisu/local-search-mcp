@@ -11,19 +11,21 @@ import { makeResult, SearchEngineError } from './base.js';
 // diff / easier rollback; the engine id exposed to callers stays 'duckduckgo'.
 
 let lastRequestTime = 0;
+let rateLimitTail = Promise.resolve();
 const MIN_INTERVAL_MS = 2000;
 
 function randomDelay(minMs = 500, maxMs = 2000) {
   return Math.floor(Math.random() * (maxMs - minMs) + minMs);
 }
 
-async function rateLimitWait() {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < MIN_INTERVAL_MS) {
-    await new Promise(r => setTimeout(r, MIN_INTERVAL_MS - elapsed));
-  }
-  lastRequestTime = Date.now();
+function rateLimitWait() {
+  const job = rateLimitTail.then(async () => {
+    const wait = Math.max(0, lastRequestTime + MIN_INTERVAL_MS - Date.now());
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastRequestTime = Date.now();
+  });
+  rateLimitTail = job.then(() => {}, () => {});
+  return job;
 }
 
 // The HTML endpoint is lightweight even inside a real browser and keeps the same stable
@@ -43,7 +45,8 @@ async function parseHtml(html, limit) {
     href = canonicalUrl(stripTrackingUrl(href));
     if (title && /^https?:\/\//.test(href || '')) results.push(makeResult({ title, url: href, snippet, engine: 'duckduckgo', rank: results.length + 1 }));
   });
-  return uniqueByUrl(results, limit).slice(0, limit);
+  const unique = uniqueByUrl(results, limit);
+  return unique.slice(0, limit);
 }
 
 export async function searchDuckDuckGo(query, opts = {}) {
@@ -72,7 +75,7 @@ export async function searchDuckDuckGo(query, opts = {}) {
       throw new SearchEngineError('ENGINE_BLOCKED', 'DuckDuckGo appears blocked/captcha in Chromium', { engine: 'duckduckgo' });
     }
 
-    const results = parseHtml(html, limit);
+    const results = await parseHtml(html, limit);
     if (results.length === 0) {
       throw new SearchEngineError('SERP_PARSE_FAILED', 'DuckDuckGo returned no parseable results in Chromium');
     }

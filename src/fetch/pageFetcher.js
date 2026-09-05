@@ -1,10 +1,14 @@
 import { CONFIG } from '../config/index.js';
-import { fetchWithTimeout, contentTypeOf } from '../utils/http.js';
+import { fetchWithTimeout, contentTypeOf, readBodyBounded } from '../utils/http.js';
 import { extractTextFromHtml } from './extract.js';
 import { normalizeWhitespace, truncateText, isLikelyBlockedText } from '../utils/normalize.js';
 import { hostIsPrivate } from '../utils/ssrf.js';
 
 const LOW_POWER_DEVICE = process.env.LOW_POWER_DEVICE === 'true';
+const MAX_HTML_BODY_BYTES = (() => {
+  const n = Number(process.env.FETCH_BODY_MAX_BYTES);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 200 * 1024 * 1024) : 8 * 1024 * 1024;
+})();
 // Randomized human-like linger + scroll before closing a fetched browser page.
 // Env: BROWSER_FETCH_CLOSE_DELAY_MS = single ms or "min,max". Default scales
 // down on low-power (ARM) devices.
@@ -127,20 +131,12 @@ export class PageFetcher {
       return await this.fetchPdf(url, resp, { maxChars, proxy: proxy.profile });
     }
 
-    let bodyTimerId;
-    const raw = await Promise.race([
-      resp.text(),
-      new Promise((_, reject) => {
-        bodyTimerId = setTimeout(() => {
-          if (resp.body && typeof resp.body.cancel === 'function') {
-            resp.body.cancel().catch(() => {});
-          }
-          reject(Object.assign(new Error('body read timed out'), { code: 'BODY_TIMEOUT' }));
-        }, 30000);
-        if (typeof bodyTimerId?.unref === 'function') bodyTimerId.unref();
-      })
-    ]);
-    clearTimeout(bodyTimerId);
+    let raw;
+    try {
+      raw = await readBodyBounded(resp, { maxBytes: MAX_HTML_BODY_BYTES, timeoutMs: 30000 });
+    } catch (err) {
+      return this.failure(url, 'http', err.code || 'BODY_ERROR', err.message, proxy.profile);
+    }
     if (isLikelyBlockedText(raw)) return this.failure(url, 'http', 'PAGE_BLOCKED_OR_CAPTCHA', 'page appears blocked/captcha', proxy.profile);
     if (raw.includes('正在安全验证') || raw.includes('security verification') || raw.includes('Cloudflare')) {
       return this.failure(url, 'http', 'PAGE_BLOCKED_OR_CAPTCHA', 'page shows security check', proxy.profile);
@@ -160,7 +156,7 @@ export class PageFetcher {
 
   async fetchPdf(url, resp, { maxChars, proxy } = {}) {
     const MAX_PDF_BYTES = 50 * 1024 * 1024;
-    const PDF_BODY_TIMEOUT_MS = 30000;
+    const PDF_BODY_TIMEOUT_MS = Number(process.env.PDF_BODY_TIMEOUT_MS) > 0 ? Number(process.env.PDF_BODY_TIMEOUT_MS) : 30000;
     const chunks = [];
     let totalBytes = 0;
     let pdfTimerId;

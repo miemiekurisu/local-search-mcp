@@ -248,6 +248,16 @@ describe('openApiRoute error handling', () => {
     app.post('/test', openApiRoute(() => {
       const err = new Error('something broke');
       err.code = 'TEST_ERR';
+      err.details = {
+        browser_session: {
+          id: 'chatgpt',
+          cdp_url: 'http://secret:9222',
+          state_path: '/data/state/c.jsonl',
+          visible_browser_profile_dir: '/data/profile',
+          home_url: 'https://chatgpt.com'
+        },
+        other: 'kept'
+      };
       throw err;
     }));
     const server = await new Promise(resolve => {
@@ -266,6 +276,11 @@ describe('openApiRoute error handling', () => {
     assert.equal(body.ok, false);
     assert.equal(body.error.code, 'TEST_ERR');
     assert.equal(body.error.message, 'something broke');
+    assert.equal(body.error.details.browser_session.cdp_url, undefined);
+    assert.equal(body.error.details.browser_session.state_path, undefined);
+    assert.equal(body.error.details.browser_session.visible_browser_profile_dir, undefined);
+    assert.equal(body.error.details.browser_session.home_url, 'https://chatgpt.com');
+    assert.equal(body.error.details.other, 'kept');
     server.close();
   });
 

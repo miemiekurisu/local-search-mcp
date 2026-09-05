@@ -57,7 +57,14 @@ export function canonicalUrl(url) {
 }
 
 export function isLikelyBlockedText(text) {
-  const t = String(text || '').toLowerCase();
+  const html = String(text || '');
+  // Scan only visible markup: benign SERPs (e.g. Google) embed the literal token
+  // "captcha" inside their own <script> payloads, which must not be read as a
+  // challenge page. Real challenge pages render the keywords in visible content.
+  const visible = html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, ' ');
+  const t = visible.toLowerCase();
   return t.includes('unusual traffic') ||
     t.includes('captcha') ||
     t.includes('verify you are human') ||

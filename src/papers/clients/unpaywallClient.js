@@ -1,5 +1,6 @@
 import { fetch } from 'undici';
-import { normalizeUnpaywallResponse, normalizeDoi } from '../paperNormalizer.js';
+import { normalizeUnpaywallResponse } from '../paperNormalizer.js';
+import { normalizeDoi } from '../paperSchemas.js';
 
 const BASE_URL = 'https://api.unpaywall.org/v2';
 

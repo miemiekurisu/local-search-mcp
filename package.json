@@ -7,7 +7,9 @@
     "start": "node src/http_server.js",
     "mcp": "node src/mcp_server.js",
     "check": "node src/self_check.js",
-    "browser:sessions": "node scripts/browser_sessions.js"
+    "browser:sessions": "node scripts/browser_sessions.js",
+    "test": "node --test",
+    "coverage": "c8 --all --include src --reporter text --reporter text-summary node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
@@ -31,5 +33,8 @@
     "ip-address": "^10.1.1",
     "qs": "^6.15.2",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "c8": "^12.0.0"
   }
 }

@@ -1,0 +1,3 @@
+Number(process.env.PAPER_MANIFEST_LOCK_STALE_MS) || (process.env.PAPER_MANIFEST_LOCK_STALE_MS = '3000');
+Number(process.env.PAPER_MANIFEST_LOCK_TIMEOUT_MS) || (process.env.PAPER_MANIFEST_LOCK_TIMEOUT_MS = '400');
+Number(process.env.PAPER_MANIFEST_LOCK_RETRY_MS) || (process.env.PAPER_MANIFEST_LOCK_RETRY_MS = '30');

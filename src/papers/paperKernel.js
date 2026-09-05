@@ -65,16 +65,14 @@ async function fetchWithRetry(url, options = {}, bodyReader) {
       clearTimeout(timer);
     }
   }
-  // Preserve the last actual error instead of always reporting 429
+  // Defensive: with 2 attempts, iteration 2 always returns on ok or throws on
+  // error, so the loop exits via return/throw and never reaches this guard.
+  /* c8 ignore next -- unreachable loop-exit guard */
   throw Object.assign(new Error(`fetchWithRetry exhausted after 2 attempts`), { status: 429 });
 }
 
 async function fetchJson(url, options = {}) {
   return fetchWithRetry(url, options, (res) => res.json());
-}
-
-async function fetchText(url, options = {}) {
-  return fetchWithRetry(url, options, (res) => res.text());
 }
 
 function openalexSearch(query, options = {}) {
@@ -93,12 +91,6 @@ function openalexLookup(id, options = {}) {
   const headers = { 'accept': 'application/json' };
   if (options.apiKey) headers['api-key'] = options.apiKey;
   return fetchJson(`${OPENALEX_BASE}/works/${id}`, { headers });
-}
-
-function openalexCitations(id, options = {}) {
-  const headers = { 'accept': 'application/json' };
-  if (options.apiKey) headers['api-key'] = options.apiKey;
-  return fetchJson(`${OPENALEX_BASE}/works/${id}/citations`, { headers });
 }
 
 function openalexReferences(id, options = {}) {
@@ -285,7 +277,10 @@ function identifierForSource(value, type) {
   if (type === 'arxiv') return normalizeArxivId(value);
   if (type === 'openalex') return value.startsWith('https://') ? value : `https://openalex.org/W${value.replace(/^W/, '')}`;
   if (type === 'semantic_scholar') return value.replace(/^CorpusId:/i, '');
+  /* c8 ignore start -- defensive passthrough for identifier types that are
+     filtered out by isSourceEnabled() before lookup */
   return value;
+  /* c8 ignore stop */
 }
 
 export class PaperKernel {
@@ -335,8 +330,13 @@ export class PaperKernel {
             results = (data.message?.items || []).map(normalizeCrossrefResult);
             break;
           }
+          // Defensive: search sources are filtered by isSourceEnabled(), which
+          // only whitelists sources handled above, so this default is unusable.
+          /* c8 ignore start -- default branches for future sources; the
+             source whitelists in isSourceEnabled() only cover handled cases */
           default:
             break;
+          /* c8 ignore stop */
         }
         allPapers.push(...results);
       } catch (err) {
@@ -441,8 +441,13 @@ export class PaperKernel {
             }
             break;
           }
+          // Defensive: lookup sources are filtered by isSourceEnabled(), which
+          // only whitelists sources handled above, so this default is unusable.
+          /* c8 ignore start -- default branches for future sources; the
+             source whitelists in isSourceEnabled() only cover handled cases */
           default:
             break;
+          /* c8 ignore stop */
         }
         if (paper) {
           if (bestPaper) {
@@ -561,7 +566,7 @@ export class PaperKernel {
     const doi = type === 'doi' ? normalizeDoi(identifier) : null;
 
     if (!doi) {
-      const lookup = await this.lookupPaper({ identifier, identifier_type: type, sources: ['crossref'] });
+      const lookup = await this.lookupPaper({ identifier, identifier_type: type });
       const resolvedDoi = lookup.paper?.doi;
       if (!resolvedDoi) {
         return { identifier, is_open_access: false, oa_status: 'unknown', best_pdf_url: null, best_landing_page_url: null, license: null, source_records: [], failures: [{ code: 'NO_DOI', message: 'could not resolve DOI' }] };

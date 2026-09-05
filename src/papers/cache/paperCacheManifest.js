@@ -4,19 +4,67 @@ import crypto from 'crypto';
 import { CONFIG, ensureDir, safeJoin } from '../../config/index.js';
 import { isExpired, computeExpiresAt } from './paperCachePolicy.js';
 
-// Serialize all manifest mutations (add/touch/delete) through one promise
-// queue. Each mutating method does load→modify→_save; without this, a touch()
-// running concurrently with addEntry() would re-save a snapshot that lacks the
-// freshly-added entry (lost update). Read-only queries are unaffected.
+// Serialize all manifest mutations (add/touch/delete) through one in-process
+// promise queue AND a cross-process exclusive lock file. Each mutating method
+// does load→modify→_save; without this, another process (http_server vs
+// mcp_server) sharing the same PAPER_CACHE_MANIFEST can whole-file-overwrite
+// the other's entries, or crash on a Windows rename EPERM.
+function _envInt(name, fallback, min) {
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.floor(n));
+}
+
+const LOCK_STALE_MS = _envInt('PAPER_MANIFEST_LOCK_STALE_MS', 30000, 100);
+const LOCK_ACQUIRE_TIMEOUT_MS = _envInt('PAPER_MANIFEST_LOCK_TIMEOUT_MS', 20000, 50);
+const LOCK_RETRY_MS = _envInt('PAPER_MANIFEST_LOCK_RETRY_MS', 100, 10);
+const SAVE_MAX_ATTEMPTS = 3;
+
+const _sleep = ms => new Promise(r => setTimeout(r, ms));
+
 let _writeQueue = Promise.resolve();
-async function _serializedWrite(fn) {
+async function _serializedWrite(lockPath, fn) {
   const prev = _writeQueue;
   let release;
   _writeQueue = new Promise(r => (release = r));
   await prev;
+  let locked = false;
   try {
-    return await fn();
+    const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS;
+    for (;;) {
+      try {
+        fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+        locked = true;
+        break;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch (_e) {
+          // lock vanished (or stat failed): fall through to deadline + retry
+        }
+        if (Date.now() > deadline) {
+          throw Object.assign(new Error(`manifest lock ${lockPath} unavailable after ${LOCK_ACQUIRE_TIMEOUT_MS}ms`), { code: 'MANIFEST_LOCK_TIMEOUT' });
+        }
+        await _sleep(LOCK_RETRY_MS);
+      }
+    }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (attempt >= SAVE_MAX_ATTEMPTS - 1 || (err.code !== 'EPERM' && err.code !== 'EACCES')) throw err;
+        await _sleep(150 * (attempt + 1));
+      }
+    }
   } finally {
+    if (locked) {
+      try { fs.unlinkSync(lockPath); } catch {}
+    }
     release();
   }
 }
@@ -79,7 +127,8 @@ export class PaperCacheManifest {
   }
 
   addEntry(entry) {
-    return _serializedWrite(() => {
+    return _serializedWrite(this.lockPath, () => {
+      this._data = null;
       this.load();
       const id = entry.id || crypto.randomUUID();
       const now = new Date().toISOString();
@@ -111,7 +160,8 @@ export class PaperCacheManifest {
   }
 
   touch(id) {
-    return _serializedWrite(() => {
+    return _serializedWrite(this.lockPath, () => {
+      this._data = null;
       this.load();
       const item = this._data.items[id];
       if (item) {
@@ -123,7 +173,8 @@ export class PaperCacheManifest {
   }
 
   deleteEntry(id) {
-    return _serializedWrite(() => {
+    return _serializedWrite(this.lockPath, () => {
+      this._data = null;
       this.load();
       const removed = this._data.items[id] || null;
       delete this._data.items[id];

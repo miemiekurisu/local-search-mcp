@@ -1,6 +1,9 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
+const SEARCH_TOOL_TIMEOUT_MS = Math.max(500, Number(process.env.SEARCH_TOOL_TIMEOUT_MS) || 120000);
+const BUNDLE_TOOL_TIMEOUT_MS = Math.max(500, Number(process.env.BUNDLE_TOOL_TIMEOUT_MS) || 180000);
+
 export function createMcpServer(kernel, browserPool, { paperKernel, paperContentKernel, paperCacheStore, paperCacheCleanup } = {}) {
   const server = new McpServer(
     {
@@ -83,7 +86,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
       return browserPool.sessionStatus(s)?.interactive_page_url;
     });
     if (!hasInteractivePage) {
-      await browserPool.close().catch(() => {});
+      await browserPool.releaseSearchResources().catch(() => {});
     }
   }
 
@@ -99,7 +102,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
       proxy_profile: z.string().optional().describe('Proxy profile name (default: "auto")')
     }
   }, wrapHandler(async (args) => {
-    const result = await withTimeout(kernel.searchWeb(args), 120000);
+    const result = await withTimeout(kernel.searchWeb(args), SEARCH_TOOL_TIMEOUT_MS);
     await closeBrowserAfterSearch(args);
     return jsonContent(result);
   }));
@@ -123,12 +126,13 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     inputSchema: {
       query: z.string().min(1).describe('Search query'),
       limit: z.number().int().min(1).max(20).optional().describe('Max search results per engine'),
+      engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (HTTP, no login). Add "google", "bing", "chatgpt", or "deepseek" explicitly if logged in.'),
       fetch_top_k: z.number().int().min(1).max(20).optional().describe('Number of result pages to fetch'),
       max_chars_total: z.number().int().min(2000).max(200000).optional().describe('Total max chars across all fetched pages'),
       proxy_profile: z.string().optional().describe('Proxy profile name')
     }
   }, wrapHandler(async (args) => {
-    const result = await withTimeout(kernel.searchAndFetch(args), 180000);
+    const result = await withTimeout(kernel.searchAndFetch(args), BUNDLE_TOOL_TIMEOUT_MS);
     await closeBrowserAfterSearch(args);
     return jsonContent(result);
   }));
@@ -202,7 +206,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     description: 'Return available search engines, proxy profiles, browser session status, and rate limits.',
     inputSchema: {}
   }, wrapHandler(async (_args, _extra) => {
-    return jsonContent(kernel.engineStatus());
+    return jsonContent(await kernel.engineStatus());
   }));
 
   server.registerResource(

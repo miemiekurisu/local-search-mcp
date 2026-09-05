@@ -172,7 +172,7 @@ export class DeepResearchKernel {
             if (!src) continue;
             const candidateDoi = src.doi;
             const candidateArxiv = src.arxiv_id;
-            if (candidateDoi === paper.doi || candidateArxiv === paper.arxiv_id) {
+            if ((paper.doi && candidateDoi === paper.doi) || (paper.arxiv_id && candidateArxiv === paper.arxiv_id)) {
               candidate.fulltext_fetched = true;
               candidate.has_sections = !!(result.sections && result.sections.length > 0);
               candidate.has_chunks = !!(result.chunks && result.chunks.length > 0);

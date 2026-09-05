@@ -119,3 +119,36 @@ export async function fetchWithTimeout(url, opts = {}) {
 export function contentTypeOf(resp) {
   return (resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
 }
+
+export async function readBodyBounded(resp, { maxBytes = 8 * 1024 * 1024, timeoutMs = 30000 } = {}) {
+  const body = resp.body;
+  if (!body) return '';
+  let timerId;
+  const timeoutP = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      if (typeof body.cancel === 'function') body.cancel().catch(() => {});
+      reject(Object.assign(new Error(`body read timed out after ${timeoutMs}ms`), { code: 'BODY_TIMEOUT' }));
+    }, timeoutMs);
+    if (typeof timerId?.unref === 'function') timerId.unref();
+  });
+  try {
+    return await Promise.race([
+      (async () => {
+        const chunks = [];
+        let total = 0;
+        for await (const chunk of body) {
+          total += chunk.length;
+          if (total > maxBytes) {
+            if (typeof body.cancel === 'function') body.cancel().catch(() => {});
+            throw Object.assign(new Error(`response body exceeds ${maxBytes} bytes`), { code: 'BODY_TOO_LARGE' });
+          }
+          chunks.push(chunk);
+        }
+        return Buffer.concat(chunks).toString('utf8');
+      })(),
+      timeoutP
+    ]);
+  } finally {
+    clearTimeout(timerId);
+  }
+}

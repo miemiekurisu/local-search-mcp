@@ -31,10 +31,12 @@ export async function searchGoogleAI(query, opts = {}) {
     const deadline = Date.now() + 60000;
     let lastText = '';
     while (Date.now() < deadline) {
+      /* c8 ignore start -- body only executes inside the real Chromium page context */
       const text = await page.evaluate(({ replySel }) => {
         const els = document.querySelectorAll(replySel);
         return els.length ? (els[els.length - 1].innerText || '').trim() : '';
       }, { replySel: REPLY_SELECTOR });
+      /* c8 ignore stop */
       if (text.length > 0) {
         if (text === lastText) return text; // stable → done
         lastText = text;

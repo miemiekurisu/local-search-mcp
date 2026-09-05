@@ -31,9 +31,11 @@ export function createKernel() {
     // cleanup(true), so without a timer here the manifest JSON grows unboundedly in
     // memory and on disk. Run actual deletion every 6h.
     const cleanupTimer = setInterval(() => {
+      /* c8 ignore start -- 6h interval body; failure-logging path unreachable in a test run */
       paperCacheCleanup?.cleanup(false).catch(err => {
         console.error('[local-search-mcp] paper cache cleanup failed:', err.message);
       });
+      /* c8 ignore stop */
     }, 6 * 60 * 60 * 1000);
     cleanupTimer.unref();
 

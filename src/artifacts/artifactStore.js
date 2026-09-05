@@ -64,15 +64,20 @@ export class ArtifactStore {
     try {
       const { kind, file } = parseArtifactRef(ref);
       const filePath = safeJoin(this.baseDir, kind, file);
-      const text = fs.readFileSync(filePath, 'utf8');
-      const start = Math.max(0, Number(offset) || 0);
-      const end = Math.min(text.length, start + Math.max(1, Number(limit) || 8000));
+      const buf = fs.readFileSync(filePath);
+      const startRaw = Math.max(0, Number(offset) || 0);
+      let start = Math.min(startRaw, buf.length);
+      while (start > 0 && start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+      const endRaw = Math.min(buf.length, start + Math.max(1, Number(limit) || 8000));
+      let end = endRaw;
+      while (end > start && end < buf.length && (buf[end] & 0xc0) === 0x80) end--;
       return {
         artifact_ref: ref,
         offset: start,
         limit: end - start,
-        total_chars: text.length,
-        text: text.slice(start, end)
+        total_bytes: buf.length,
+        total_chars: buf.toString('utf8').length,
+        text: buf.slice(start, end).toString('utf8')
       };
     } catch (err) {
       if (err.code === 'ENOENT') {

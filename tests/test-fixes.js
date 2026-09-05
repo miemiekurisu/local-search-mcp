@@ -32,20 +32,16 @@ describe('Bug 2: http.js sec-fetch-user header name', () => {
 });
 
 describe('Bug 3: SSRF IPv6 and bracket stripping', () => {
-  it('http.js should strip brackets and check fc/fd/fe8', () => {
-    const s = src('../src/utils/http.js');
-    assert.ok(s.includes("hostname.slice(1, -1)"));
-    assert.ok(s.includes("hostname.startsWith('fc')"));
-    assert.ok(s.includes("hostname.startsWith('fd')"));
-    assert.ok(s.includes("hostname.startsWith('fe8')"));
+  it('ssrf.js should strip brackets and check fc/fd/fe8', () => {
+    const s = src('../src/utils/ssrf.js');
+    assert.ok(s.includes("host.slice(1, -1)"));
+    assert.ok(s.includes("/^f[cd]/"));
+    assert.ok(s.includes("/^fe[89ab]/"));
   });
 
-  it('pageFetcher.js should strip brackets and check fc/fd/fe8', () => {
-    const s = src('../src/fetch/pageFetcher.js');
-    assert.ok(s.includes("h.slice(1, -1)"));
-    assert.ok(s.includes("h.startsWith('fc')"));
-    assert.ok(s.includes("h.startsWith('fd')"));
-    assert.ok(s.includes("h.startsWith('fe8')"));
+  it('http.js and pageFetcher.js delegate to hostIsPrivate', () => {
+    assert.ok(src('../src/utils/http.js').includes('hostIsPrivate'));
+    assert.ok(src('../src/fetch/pageFetcher.js').includes('hostIsPrivate'));
   });
 });
 

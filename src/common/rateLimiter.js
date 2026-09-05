@@ -68,8 +68,11 @@ export class RateLimiter {
       resolve();
     }
 
+    /* c8 ignore start -- unreachable: if residual waiters exist, the batch always
+       saturated maxConcurrency (batchSize = min(available, queue.length)) */
     if (bucket.queue.length > 0 && bucket.activeCount < this._maxConcurrency) {
       setImmediate(() => this._drain(key));
     }
+    /* c8 ignore stop */
   }
 }

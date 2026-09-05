@@ -40,9 +40,22 @@ export class PaperCacheStore {
   }
 
   _variantSubdir(variant) {
-    const parts = variant.split('/');
+    const parts = String(variant || '').split('/').filter(Boolean);
+    if (parts.length === 0 || !parts.every(p => /^[A-Za-z0-9_-]{1,64}$/.test(p))) {
+      throw new Error(`invalid cache variant: ${variant}`);
+    }
     if (parts[0] === 'raw') return parts.slice(1).join('/') || '';
-    return variant;
+    return parts.join('/');
+  }
+
+  _fileNameFor_paperKey(paperKey, ext) {
+    const key = String(paperKey || '');
+    if (!key) throw new Error(`invalid paper key: ${paperKey}`);
+    const safe = /^[A-Za-z0-9._-]{1,120}$/.test(key) && !key.includes('..')
+      ? key
+      : key.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/\.{2,}/g, '__').slice(0, 60) || 'key';
+    const digest = crypto.createHash('sha1').update(key).digest('hex').slice(0, 12);
+    return `${safe}-${digest}.${ext}`;
   }
 
   _fileForVariant(variant, paperKey, hash) {
@@ -51,9 +64,12 @@ export class PaperCacheStore {
       return path.join(this.config.rawDir, subdir, hash);
     }
     if (variant === 'sections' || variant === 'chunks') {
-      return path.join(this.config.dir, subdir, `${paperKey}.json`);
+      return path.join(this.config.dir, subdir, this._fileNameFor_paperKey(paperKey, 'json'));
     }
-    return path.join(this.config.textDir, `${paperKey}.txt`);
+    if (variant === 'text') {
+      return path.join(this.config.textDir, this._fileNameFor_paperKey(paperKey, 'txt'));
+    }
+    throw new Error(`invalid cache variant: ${variant}`);
   }
 
   async storeRaw(variant, sourceUrl, data, metadata = {}) {
@@ -136,14 +152,20 @@ export class PaperCacheStore {
     fs.writeFileSync(filePath, json, 'utf8');
     const hash = this._contentHash(Buffer.from(json, 'utf8'));
     return await this.manifest.addEntry({
+      identifier_type: metadata.identifier_type || null,
+      identifier_value: metadata.identifier_value || null,
+      source: metadata.source || null,
+      source_url: metadata.source_url || null,
+      open_access_status: metadata.open_access_status || null,
+      license: metadata.license || null,
+      error_message: metadata.error_message || null,
       paper_key: paperKey,
       variant,
       content_hash: hash,
       file_path: filePath,
       mime_type: 'application/json',
       size_bytes: Buffer.byteLength(json, 'utf8'),
-      status: 'ready',
-      ...metadata
+      status: 'ready'
     });
   }
 

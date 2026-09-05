@@ -25,9 +25,9 @@ export class SearchKernel {
       proxyProfile: args.proxy_profile || args.proxyProfile || 'auto',
       timeoutMs: args.timeout_ms || args.timeoutMs
     });
-    const fetchTopK = Math.min(search.results.length, Math.max(0, Number(args.fetch_top_k ?? args.fetchTopK ?? 5)));
-    const maxCharsTotal = Number(args.max_chars_total || args.maxCharsTotal || 30000);
-    const query_id = 'q_' + crypto.createHash('sha1').update(query + Date.now()).digest('hex').slice(0, 12);
+    const fetchTopK = Math.min(search.results.length, Math.max(0, Math.floor(Number(args.fetch_top_k ?? args.fetchTopK ?? 5)) || 0));
+    const maxCharsTotal = Math.max(1000, Math.min(300000, Math.floor(Number(args.max_chars_total || args.maxCharsTotal || 30000)) || 30000));
+    const query_id = 'q_' + crypto.randomBytes(6).toString('hex');
     const payload = {
       query_id,
       query,
@@ -117,7 +117,7 @@ export class SearchKernel {
       artifact_ref: f.artifact_ref, source_type: f.source_type
     }));
     const failures = [...(search.failures || [])];
-    const bundle_id = 'eb_' + crypto.createHash('sha1').update(query + Date.now()).digest('hex').slice(0, 12);
+    const bundle_id = 'eb_' + crypto.randomBytes(6).toString('hex');
     const bundle = {
       type: 'evidence_bundle', bundle_id, query,
       searched_results: search.results.length,

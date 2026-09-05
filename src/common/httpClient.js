@@ -106,19 +106,6 @@ export class HttpClient {
         }
       }
 
-      const executeFetch = async () => {
-        if (rateLimitKey && rateLimiter) {
-          await rateLimiter.acquire(rateLimitKey);
-        }
-        try {
-          return await fetch(targetUrl, init);
-        } finally {
-          if (rateLimitKey && rateLimiter) {
-            rateLimiter.release(rateLimitKey);
-          }
-        }
-      };
-
       let response;
       let currentUrl = targetUrl;
       const maxRedirects = 5;

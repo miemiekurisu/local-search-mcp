@@ -7,6 +7,17 @@ const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const PHOTON_URL = 'https://photon.komoot.io/api/';
 
 let lastPhotonTime = 0;
+let photonTail = Promise.resolve();
+
+function photonRateLimitWait() {
+  const job = photonTail.then(async () => {
+    const wait = Math.max(0, lastPhotonTime + 600 - Date.now());
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastPhotonTime = Date.now();
+  });
+  photonTail = job.then(() => {}, () => {});
+  return job;
+}
 
 // Derived lazily — COMMON_CITY_PINYIN is declared later in this module.
 let _cityPrefixes = null;
@@ -49,12 +60,7 @@ function looksLikePlaceName(text) {
 // Open-Meteo geocoding has no data for Chinese sub-city places, while
 // Photon resolves exact names like 武侯区, 三林镇, 人民广场 natively.
 async function geocodeSubCity(query) {
-  const now = Date.now();
-  const elapsed = now - lastPhotonTime;
-  if (elapsed < 600) {
-    await new Promise(r => setTimeout(r, 600 - elapsed));
-  }
-  lastPhotonTime = Date.now();
+  await photonRateLimitWait();
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);

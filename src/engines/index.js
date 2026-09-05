@@ -11,6 +11,10 @@ import { searchCustomHtml } from './custom_html.js';
 import { searchWithFallbacks } from './api_fallback.js';
 
 const CHROMIUM_ONLY_ENGINES = new Set(['google', 'chatgpt', 'deepseek']);
+let engineTimeoutOverride = null;
+if (Number.isFinite(Number(process.env.ENGINE_TIMEOUT_MS)) && Number(process.env.ENGINE_TIMEOUT_MS) > 0) {
+  engineTimeoutOverride = Number(process.env.ENGINE_TIMEOUT_MS);
+}
 
 export class EngineRegistry {
   constructor({ proxyRouter, browserPool }) {
@@ -59,18 +63,33 @@ export class EngineRegistry {
     const poolLimit = Math.max(limit, Math.min(limit * 2, CONFIG.maxSearchLimit * 2));
     const engines = normalizeEngines(opts.engines, this.customEngines);
     const failures = [];
-    const all = [];
+    const perEngine = [];
     const failedEngines = [];
-    
+
     for (const engine of engines) {
       try {
-        const timeout = engine === 'chatgpt' ? 180000 : engine === 'google' ? 150000 : engine === 'deepseek' ? 360000 : engine === 'bing' ? 60000 : 20000;
+        const timeout = engineTimeoutOverride ?? (engine === 'chatgpt' ? 180000 : engine === 'google' ? 150000 : engine === 'deepseek' ? 360000 : engine === 'bing' ? 60000 : 20000);
         const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit: poolLimit }), timeout);
-        all.push(...results);
+        if (results.length > 0) perEngine.push(results);
       } catch (err) {
         failures.push(this.buildFailure(engine, err));
         failedEngines.push(engine);
       }
+    }
+
+    // Interleave engine result lists round-robin so one fast/dominant engine
+    // cannot exhaust poolLimit before the later engines contribute anything.
+    const all = [];
+    for (let i = 0; all.length < poolLimit; i++) {
+      let added = false;
+      for (const list of perEngine) {
+        if (i < list.length) {
+          all.push(list[i]);
+          added = true;
+          if (all.length >= poolLimit) break;
+        }
+      }
+      if (!added) break;
     }
     
     let fallbackWarning = null;
@@ -83,10 +102,14 @@ export class EngineRegistry {
       }));
     const fallbackEligibleEngines = failedEngines.filter(engine => !CHROMIUM_ONLY_ENGINES.has(engine));
     if (fallbackEligibleEngines.length > 0) {
-      const fallbackData = await searchWithFallbacks(query, limit, fallbackEligibleEngines);
-      if (fallbackData) {
-        all.push(...fallbackData.results);
-        fallbackWarning = `页面搜索不可用，已通过 ${fallbackData.via} API 获取结果。注意：${fallbackData.via} 有免费额度限制，超出后可能产生费用。建议配置自己的API Key。`;
+      try {
+        const fallbackData = await searchWithFallbacks(query, limit, fallbackEligibleEngines);
+        if (fallbackData) {
+          all.push(...fallbackData.results);
+          fallbackWarning = `页面搜索不可用，已通过 ${fallbackData.via} API 获取结果。注意：${fallbackData.via} 有免费额度限制，超出后可能产生费用。建议配置自己的API Key。`;
+        }
+      } catch (err) {
+        console.error(`[search] fallback API failed: ${err?.message || err}`);
       }
     }
     
@@ -133,14 +156,21 @@ export class EngineRegistry {
 }
 
 function withTimeout(promise, ms) {
+  let timer;
   return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => {
-      const err = new Error(`Engine timed out after ${ms}ms`);
-      err.code = 'ENGINE_TIMEOUT';
-      reject(err);
-    }, ms))
-  ]);
+    promise.catch(err => {
+      console.error(`[search] late engine failure: ${err?.message || err}`);
+      throw err;
+    }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`Engine timed out after ${ms}ms`);
+        err.code = 'ENGINE_TIMEOUT';
+        reject(err);
+      }, ms);
+      if (typeof timer?.unref === 'function') timer.unref();
+    })
+  ]).finally(() => clearTimeout(timer));
 }
 
 function normalizeEngines(engines, customEngines) {

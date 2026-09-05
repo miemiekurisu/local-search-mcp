@@ -1,12 +1,7 @@
 import * as cheerio from 'cheerio';
 import { CONFIG } from '../config/index.js';
-import { fetchWithTimeout } from '../utils/http.js';
 import { canonicalUrl, normalizeWhitespace, stripTrackingUrl, uniqueByUrl, isLikelyBlockedText } from '../utils/normalize.js';
 import { makeResult, SearchEngineError } from './base.js';
-
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const GOOGLE_SEARCH_ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
-const ENABLE_GOOGLE_API_FALLBACK = process.env.ENABLE_GOOGLE_API_FALLBACK === 'true';
 
 function envInt(name, fallback, min) {
   const n = Number(process.env[name]);
@@ -15,19 +10,21 @@ function envInt(name, fallback, min) {
 }
 
 let lastRequestTime = 0;
+let rateLimitTail = Promise.resolve();
 const MIN_INTERVAL_MS = envInt('GOOGLE_MIN_INTERVAL_MS', 3000, 0);
 
 function randomDelay(minMs = 500, maxMs = 2000) {
   return Math.floor(Math.random() * (maxMs - minMs) + minMs);
 }
 
-async function rateLimitWait() {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < MIN_INTERVAL_MS) {
-    await new Promise(r => setTimeout(r, MIN_INTERVAL_MS - elapsed));
-  }
-  lastRequestTime = Date.now();
+function rateLimitWait() {
+  const job = rateLimitTail.then(async () => {
+    const wait = Math.max(0, lastRequestTime + MIN_INTERVAL_MS - Date.now());
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastRequestTime = Date.now();
+  });
+  rateLimitTail = job.then(() => {}, () => {});
+  return job;
 }
 
 async function extractSearchResults(page, limit) {
@@ -106,34 +103,9 @@ async function humanGlance(page) {
   await page.waitForTimeout(randomDelay(600, 1500));
 }
 
-async function searchGoogleApi(query, limit) {
-  if (!GOOGLE_API_KEY) return [];
-  const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_SEARCH_ENGINE_ID}&q=${encodeURIComponent(query)}&num=${limit}`;
-  const resp = await fetchWithTimeout(url, { timeoutMs: CONFIG.defaultTimeoutMs });
-  if (!resp.ok) return [];
-  const data = await resp.json().catch(() => ({}));
-  if (!data.items || !Array.isArray(data.items)) return [];
-  return data.items.map((item, i) => makeResult({
-    title: item.title || '',
-    url: item.link || '',
-    snippet: item.snippet || '',
-    engine: 'google',
-    rank: i + 1
-  }));
-}
-
 export async function searchGoogle(query, opts = {}) {
   const limit = Math.max(1, Math.min(20, Number(opts.limit || CONFIG.defaultSearchLimit)));
-  
-  const results = await searchGoogleBrowser(query, { ...opts, limit });
-  if (results.length > 0) return results;
-
-  if (ENABLE_GOOGLE_API_FALLBACK) {
-    const apiResults = await searchGoogleApi(query, limit);
-    if (apiResults.length > 0) return apiResults;
-  }
-  
-  throw new SearchEngineError('ENGINE_BLOCKED', 'Google search failed in the Chromium browser session');
+  return await searchGoogleBrowser(query, { ...opts, limit });
 }
 
 export async function searchGoogleBrowser(query, opts = {}) {

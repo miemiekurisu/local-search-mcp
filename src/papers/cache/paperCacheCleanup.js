@@ -35,9 +35,11 @@ export class PaperCacheCleanup {
             removed++;
           }
         } catch {
+          /* per-file errors (e.g. vanished between readdir and stat) are skipped */
         }
       }
     } catch {
+      /* whole-tmpDir cleanup failure (e.g. dir replaced by a file) is skipped */
     }
     return { step: 'cleanup_tmp', removed, dry_run: dryRun };
   }

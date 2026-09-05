@@ -89,13 +89,14 @@ function classifyLoginFailure(state) {
   ) {
     return new SearchEngineError(
       'INTERACTIVE_LOGIN_REQUIRED',
-      'ChatGPT requires interactive verification in the shared browser session. Complete the check manually in noVNC, then retry.',
+      'ChatGPT 触发 CAPTCHA/人机验证或需要登录。请在 noVNC（远程浏览器，端口 6082）里手动完成验证（验证码请人工解开），完成后重试。',
       {
         session: 'chatgpt',
         login_url: CHATGPT_SESSION.loginUrl,
         current_url: url,
         cdp_url: CONFIG.chromeDevtoolsMcpBrowserUrl,
-        retry_hint: 'Open the chatgpt session in noVNC, finish the human/2FA/security check in the visible Chromium, then retry.'
+        recovery: 'novnc_human_check',
+        retry_hint: 'Open the chatgpt session in noVNC, finish the CAPTCHA/human check manually in the visible Chromium, then retry.'
       }
     );
   }
@@ -142,7 +143,9 @@ async function getChatState(client) {
         .map(buttonLabel)
         .filter(Boolean)
         .slice(0, 40);
-    const assistantNodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+    const assistantNodes = Array.from(document.querySelectorAll(
+      '[data-message-author-role="assistant"], li[data-message-role="assistant"]'
+    ));
     const latestAssistant = assistantNodes[assistantNodes.length - 1];
     const candidateSet = new Set();
     const candidates = [];
@@ -222,9 +225,15 @@ async function ensureSelectedChatPage(client) {
   }
 
   await client.selectPage(target.index);
-  if (!target.url.startsWith(CHATGPT_SESSION.homeUrl)) {
+  // 每次强制回首页：在旧会话里续问会让基线统计失效（历史上的
+  // conversation 里已经存在回复轮），也避免旧问题上下文污染新回答。
+  if (!/^https:\/\/chatgpt\.com\/?([?#].*)?$/.test(target.url)) {
     await client.navigatePage(CHATGPT_SESSION.homeUrl);
   }
+}
+
+function stripSaidPrefix(text) {
+  return String(text || '').replace(/^chatgpt said:?\s*/i, '').trim();
 }
 
 async function waitForComposer(client, timeoutMs = 30000) {
@@ -274,18 +283,39 @@ async function sendPrompt(client, query) {
   }
 }
 
-async function waitForAssistantReply(client, baselineCount) {
+async function waitForAssistantReply(client, baseline) {
+  const baselineCount = Number(baseline?.count || 0);
+  const baselineText = String(baseline?.text || '');
   const deadline = Date.now() + Math.max(CONFIG.browserTimeoutMs * 3, 90000);
   let lastSeen = '';
   let stablePolls = 0;
   let completionActionPolls = 0;
   let settledPolls = 0;
+  let backendFailurePolls = 0;
 
   while (Date.now() < deadline) {
     const state = await getChatState(client);
+    if (process.env.CHATGPT_DEBUG === '1') {
+      console.error(`[chatgpt][poll] composer=${state?.composerVisible} count=${state?.assistantCount} baseline=${baselineCount} busy=${state?.isGenerating} intercept=${state?.loginIntercept} url=${String(state?.url || '').slice(0, 60)} text=${JSON.stringify(String(state?.latestAssistantText || '').slice(0, 60))}`);
+    }
+    const noAssistantYet = !(state.assistantCount > baselineCount);
+    if (noAssistantYet && /unable to connect/i.test(String(state.bodyText || ''))) {
+      backendFailurePolls++;
+      if (backendFailurePolls >= 3) {
+        throw new SearchEngineError(
+          'CHATGPT_BACKEND_ERROR',
+          "ChatGPT 连续返回 'Unable to connect'（匿名会话后端连接失败：常见于代理出口被拒、匿名额度不可用或区域限制）。可在 noVNC（端口 6082）里手动点重试验证，或登录 chatgpt 会话后重试。",
+          chatGptErrorDetails({
+            retry_hint: 'Open the chatgpt session in noVNC (port 6082), press Retry manually to confirm, or log in to the chatgpt session, then retry.'
+          })
+        );
+      }
+    }
     if (state.composerVisible) {
       const latest = String(state.latestAssistantText || '').trim();
-      if (state.assistantCount > baselineCount && latest) {
+      // 计数增长或文本变化都算"来了新回复"：页面可能复用/重定向，仅靠
+      // assistantCount 与基线比较大小时会漏判（如旧会话里继续提问）。
+      if (latest && (state.assistantCount > baselineCount || latest !== baselineText)) {
         const textUnchanged = latest === lastSeen;
         stablePolls = textUnchanged ? stablePolls + 1 : 0;
         completionActionPolls = hasTurnCompletionActions(state) ? completionActionPolls + 1 : 0;
@@ -304,7 +334,7 @@ async function waitForAssistantReply(client, baselineCount) {
     } else if (state.loginIntercept) {
       throw new SearchEngineError(
         'LOGIN_REQUIRED',
-        'ChatGPT 未登录，发送后被要求登录。请通过 noVNC（远程浏览器，端口 6082）打开 chatgpt 会话，手动完成登录后保存会话，再重试。',
+        'ChatGPT 未登录（匿名轻量级对话额度已用尽或被要求登录）。请通过 noVNC（远程浏览器，端口 6082）打开 chatgpt 会话，手动完成登录后保存会话，再重试。',
         chatGptErrorDetails({
           retry_hint: 'Open the chatgpt session in noVNC (port 6082), sign in to ChatGPT in the visible Chromium, save the session, then retry.'
         })
@@ -315,8 +345,9 @@ async function waitForAssistantReply(client, baselineCount) {
 
     await sleep(1500);
   }
-
+    /* c8 ignore start -- real-time 90s+ assistant poll deadline, not testable timely */
   throw new SearchEngineError('NO_RESPONSE', 'Timed out waiting for ChatGPT response');
+    /* c8 ignore stop */
 }
 
 export async function searchChatGPT(query) {
@@ -326,26 +357,31 @@ export async function searchChatGPT(query) {
     await ensureSelectedChatPage(client);
     const readyState = await waitForComposer(client, 30000);
     if (readyState.notLoggedIn) {
-      throw new SearchEngineError(
-        'LOGIN_REQUIRED',
-        'ChatGPT 未登录，无法使用。请通过 noVNC（远程浏览器，端口 6082）打开 chatgpt 会话，手动完成登录后保存会话，再重试。',
-        chatGptErrorDetails({
-          retry_hint: 'Open the chatgpt session in noVNC (port 6082), sign in to ChatGPT in the visible Chromium, save the session, then retry.'
-        })
-      );
+      // 未登录时 ChatGPT 仍允许轻量级匿名对话：继续执行，由结果标注模式，
+      // 调用方按 auth_note 提示终端用户（匿名有频率/能力限制，可能触发验证码）。
+      console.error('[chatgpt] not logged in — proceeding in anonymous lightweight chat mode');
     }
+    const chatgptMode = readyState.notLoggedIn ? 'anonymous' : 'logged_in';
     const baselineCount = Number(readyState.assistantCount || 0);
 
     await sendPrompt(client, query);
-    const response = await waitForAssistantReply(client, baselineCount);
+    const response = stripSaidPrefix(await waitForAssistantReply(client, {
+      count: baselineCount,
+      text: readyState.latestAssistantText || ''
+    }));
     const snippet = response.slice(0, 1800);
 
-    return [makeResult({
+    return [Object.assign(makeResult({
       title: response.slice(0, 100),
       url: CHATGPT_SESSION.homeUrl,
       snippet,
       engine: 'chatgpt',
       rank: 1
+    }), {
+      mode: chatgptMode,
+      auth_note: chatgptMode === 'anonymous'
+        ? 'ChatGPT 未登录：本次为匿名轻量级对话结果（有频率与能力限制，可能中途触发登录墙或 CAPTCHA）。如需完整功能请在 noVNC 登录 chatgpt 会话。'
+        : 'ChatGPT 已登录会话。'
     })];
   } catch (err) {
     if (err instanceof SearchEngineError) {
