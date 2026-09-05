@@ -38,30 +38,38 @@ export async function searchBing(query, opts = {}) {
     sessionKey: 'bing',
     reuseSession: true
   }, async (page) => {
-    await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query)}&num=${limit}`, { 
-      waitUntil: 'networkidle', 
-      timeout: 45000 
+    await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query)}&num=${limit}`, {
+      waitUntil: 'networkidle',
+      timeout: 45000
     });
-    await page.waitForTimeout(1500);
-    
-    let html = await page.content();
-    
-    if (page.url().includes('cn.bing.com')) {
-      await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query)}&num=${limit}&setlang=en`, { 
-        waitUntil: 'networkidle', 
-        timeout: 45000 
+
+    // Bing 的 rdr=1 跳转变体页是渐进渲染：networkidle 后 #b_results / li.b_algo
+    // 仍可能尚未挂进 DOM（35 号机实测），解析要带 hydrate 轮询等待。
+    let parsed = [];
+    if (!page.url().includes('cn.bing.com')) {
+      parsed = await parseWithHydrationWait(page, limit);
+    }
+
+    if (parsed.length === 0 && page.url().includes('cn.bing.com')) {
+      await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query)}&num=${limit}&setlang=en`, {
+        waitUntil: 'networkidle',
+        timeout: 45000
       });
-      await page.waitForTimeout(1500);
-      html = await page.content();
+      parsed = await parseWithHydrationWait(page, limit);
     }
-    
-    const parsed = parseBingHtml(html, limit);
-    /* c8 ignore next 4 -- BING_DEBUG: manual live-debug aid, exercised only on real devices */
-    if (process.env.BING_DEBUG === '1') {
-      const dbg = cheerio.load(html);
-      console.error(`[bing][debug] url=${page.url().slice(0, 100)} htmlLen=${html.length} lis=${dbg('.b_results > li').length} liAlgo=${dbg('li.b_algo').length} parsed=${parsed.length}`);
-    }
+
     if (parsed.length === 0) throw new SearchEngineError('SERP_PARSE_FAILED', 'Bing returned no results');
     return parsed;
   });
+}
+
+async function parseWithHydrationWait(page, limit) {
+  let parsed = [];
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const html = await page.content();
+    parsed = parseBingHtml(html, limit);
+    if (parsed.length > 0) return parsed;
+    await page.waitForTimeout(1000);
+  }
+  return parsed;
 }
