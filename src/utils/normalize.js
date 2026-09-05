@@ -38,7 +38,8 @@ const TRACKING_PARAMS = [
   'ref', 'ref_src', 'ref_url', 'source',
   'ved', 'usg', 'usqp',
   'si', 'srsltid', 'rio',
-  'wbraid', 'gbraid', 'ysclid'
+  'wbraid', 'gbraid', 'ysclid',
+  'SRCHHPGUSR'
 ];
 
 export function canonicalUrl(url) {

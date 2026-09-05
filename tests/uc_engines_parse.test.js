@@ -125,6 +125,17 @@ test('bing happy + cn redirect path + parse fail', async () => {
   await assert.rejects(searchBing('q', { browserPool: pool3 }), { code: 'SERP_PARSE_FAILED' });
 });
 
+test('bing parses rdr variant without #b_results container (li.b_algo loose in body)', async () => {
+  const { searchBing } = await import('../src/engines/bing.js');
+  const RDR_VARIANT = '<div class="results"><li class="b_algo"><h2><a href="https://rdr.example.com/1?SRCHHPGUSR=x">Rdr Variant</a></h2><div class="b_caption"><p>rdr snippet</p></div></li>' +
+    '<li class="b_algo"><h2><a href="https://rdr.example.com/2">Second Rdr</a></h2></li></div>';
+  pageImpl.html = RDR_VARIANT;
+  const results = await searchBing('q', { browserPool: fakePool(), limit: 10 });
+  assert.strictEqual(results.length, 2);
+  assert.strictEqual(results[0].url, 'https://rdr.example.com/1');
+  assert.strictEqual(results[1].title, 'Second Rdr');
+});
+
 // ── google ──────────────────────────────────────────────────
 const GOOGLE_SERP = '<a href="https://g1.example.com/a?utm_source=gy"><h3>Google One</h3><span>extra</span></a>' +
   '<a href="https://g2.example.com/b"><h3>Google Two</h3></a>';

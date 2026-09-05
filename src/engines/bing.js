@@ -6,8 +6,12 @@ import { makeResult, SearchEngineError } from './base.js';
 function parseBingHtml(html, limit) {
   const $ = cheerio.load(html);
   const results = [];
-  
-  $('#b_results > li').each((i, elem) => {
+
+  // Bing 有两种产物：标准页有 #b_results 容器；部分跳转变体页直接把
+  // li.b_algo 散在 body 里（没有 #b_results 包装）——两种都要能解析。
+  let items = $('#b_results > li');
+  if (items.length === 0) items = $('li.b_algo');
+  items.each((i, elem) => {
     if (results.length >= limit) return;
     const el = $(elem);
     const a = el.find('h2 a').first();
@@ -52,6 +56,11 @@ export async function searchBing(query, opts = {}) {
     }
     
     const parsed = parseBingHtml(html, limit);
+    /* c8 ignore next 4 -- BING_DEBUG: manual live-debug aid, exercised only on real devices */
+    if (process.env.BING_DEBUG === '1') {
+      const dbg = cheerio.load(html);
+      console.error(`[bing][debug] url=${page.url().slice(0, 100)} htmlLen=${html.length} lis=${dbg('.b_results > li').length} liAlgo=${dbg('li.b_algo').length} parsed=${parsed.length}`);
+    }
     if (parsed.length === 0) throw new SearchEngineError('SERP_PARSE_FAILED', 'Bing returned no results');
     return parsed;
   });
