@@ -66,7 +66,11 @@ export async function searchBing(query, opts = {}) {
 async function parseWithHydrationWait(page, limit) {
   // Bing 的 rdr=1 变体页在弱机（ARM/低资源）上 hydrate 很慢：networkidle 后
   // #b_results / li.b_algo 可能 8+ 秒才挂进 DOM。等到结果节点出现再解析。
-  await page.waitForSelector('li.b_algo, #b_results > li', { timeout: 20000 }).catch(() => null);
+  const sel = await page.waitForSelector('li.b_algo, #b_results > li', { timeout: 20000 }).catch(() => null);
   const html = await page.content();
+  /* c8 ignore next 3 -- BING_DEBUG: manual live-debug aid, exercised only on real devices */
+  if (process.env.BING_DEBUG === '1') {
+    console.error(`[bing][debug] sel=${sel ? 'hit' : 'miss'} url=${page.url().slice(0, 70)} htmlLen=${html.length} b_algo=${(html.match(/<li[^>]*class="b_algo"/g) || []).length} bRes=/#b_results/=${/id="b_results"/.test(html)}`);
+  }
   return parseBingHtml(html, limit);
 }

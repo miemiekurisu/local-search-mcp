@@ -49,9 +49,10 @@ export function canonicalUrl(url) {
     for (const p of TRACKING_PARAMS) {
       u.searchParams.delete(p);
     }
-    let result = u.toString();
-    result = result.replace(/^https?:\/\/(www\d?\.)/, '://');
-    return result;
+    // 保留 scheme（之前把 https://www.x 缩成 ://x 会导致 fetch 失效、
+    // 且被引擎的 http 校验全部拒收——35 号机 Bing 匿名结果实测回零）。
+    // 仅移除 www\d?\. 前缀用于归一化。
+    return u.toString().replace(/^(https?:\/\/)www\d?\./, '$1');
   } catch {
     return url;
   }

@@ -105,7 +105,7 @@ test('stripTrackingUrl branches', () => {
 });
 
 test('canonicalUrl branches', () => {
-  assert.strictEqual(normalize.canonicalUrl('https://www.a.com/?utm_source=x&id=2#frag'), '://a.com/?id=2');
+  assert.strictEqual(normalize.canonicalUrl('https://www.a.com/?utm_source=x&id=2#frag'), 'https://a.com/?id=2');
   assert.strictEqual(normalize.canonicalUrl('not a url'), 'not a url');
   assert.strictEqual(normalize.canonicalUrl('http://a.com/'), 'http://a.com/');
 });
@@ -134,7 +134,8 @@ test('uniqueByUrl + filterBlockedDomains + hostOf', () => {
     { url: 'https://b.com/' }
   ];
   const out = normalize.uniqueByUrl(items, 20);
-  assert.deepStrictEqual(out.map(i => i.url), ['https://www.a.com/x', 'https://a.com/x', 'https://b.com/']);
+  // www 前缀已归一化 → 两条约为同一 URL，仅保留首条
+  assert.deepStrictEqual(out.map(i => i.url), ['https://www.a.com/x', 'https://b.com/']);
   assert.strictEqual(normalize.hostOf('https://www.z.com/p?q=1'), 'z.com');
   assert.strictEqual(normalize.hostOf('bad url'), '');
 });
