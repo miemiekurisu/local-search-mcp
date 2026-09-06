@@ -1,8 +1,11 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-const SEARCH_TOOL_TIMEOUT_MS = Math.max(500, Number(process.env.SEARCH_TOOL_TIMEOUT_MS) || 120000);
-const BUNDLE_TOOL_TIMEOUT_MS = Math.max(500, Number(process.env.BUNDLE_TOOL_TIMEOUT_MS) || 180000);
+// 默认 240s：DeepSeek + 交叉/聚合验证链在低资源设备（ARM/受限出口）实测
+// 可达 ~135s，120s 会把整链成功的结果砍成 TIMEOUT（35 号机实测）。普通
+// 引擎毫秒级返回不受影响，此值只是慢引擎的上限，仍可用同名 env 覆盖。
+const SEARCH_TOOL_TIMEOUT_MS = Math.max(500, Number(process.env.SEARCH_TOOL_TIMEOUT_MS) || 240000);
+const BUNDLE_TOOL_TIMEOUT_MS = Math.max(500, Number(process.env.BUNDLE_TOOL_TIMEOUT_MS) || 240000);
 
 export function createMcpServer(kernel, browserPool, { paperKernel, paperContentKernel, paperCacheStore, paperCacheCleanup } = {}) {
   const server = new McpServer(
