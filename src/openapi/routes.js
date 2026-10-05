@@ -29,14 +29,39 @@ function normalizeToolError(err) {
   };
 }
 
-export function openApiRoute(fn) {
+// cancellable routes hand the handler an AbortSignal that fires when the client
+// hangs up. Without it an abandoned /tools/search_web kept its engine and its
+// browser page slot alive for the full engine timeout, which on a host with one or
+// two slots is how one dead client makes every other client wait.
+export function openApiRoute(fn, { cancellable = false } = {}) {
   return async (req, res) => {
+    let args = req.body || {};
+    let onClose = null;
+    // req.destroyed is useless here (Node destroys an IncomingMessage as soon as
+    // its body has been read), so the disconnect is tracked explicitly.
+    let clientGone = false;
+    if (cancellable) {
+      const controller = new AbortController();
+      onClose = () => {
+        if (!res.writableEnded) {
+          clientGone = true;
+          controller.abort('OpenAPI client disconnected');
+        }
+      };
+      res.on('close', onClose);
+      args = { ...args, signal: controller.signal };
+    }
     try {
-      const result = await fn(req.body || {});
+      const result = await fn(args);
       res.json({ ok: true, result });
     } catch (err) {
+      // The caller is gone; the rejection is our own cancellation and there is
+      // nobody left to read a body. Everything else must still be reported.
+      if (clientGone || res.writableEnded || res.headersSent) return;
       const statusCode = err.statusCode || 500;
       res.status(statusCode).json(normalizeToolError(err));
+    } finally {
+      if (onClose) res.removeListener('close', onClose);
     }
   };
 }
@@ -47,10 +72,10 @@ export function registerOpenApiRoutes(app, kernel) {
     res.json(buildOpenApiSpec(baseUrl));
   });
 
-  app.post('/tools/search_web', openApiRoute(args => kernel.searchWeb(args)));
-  app.post('/tools/fetch_page', openApiRoute(args => kernel.fetchPage(args)));
-  app.post('/tools/search_and_fetch', openApiRoute(args => kernel.searchAndFetch(args)));
-  app.post('/tools/research_problem', openApiRoute(args => kernel.researchProblem(args)));
+  app.post('/tools/search_web', openApiRoute(args => kernel.searchWeb(args), { cancellable: true }));
+  app.post('/tools/fetch_page', openApiRoute(args => kernel.fetchPage(args), { cancellable: true }));
+  app.post('/tools/search_and_fetch', openApiRoute(args => kernel.searchAndFetch(args), { cancellable: true }));
+  app.post('/tools/research_problem', openApiRoute(args => kernel.researchProblem(args), { cancellable: true }));
   app.post('/tools/engine_status', openApiRoute(async () => kernel.engineStatus()));
   app.post('/tools/get_time', openApiRoute(async (args) => {
     const { getCurrentTime } = await import('../tools/time.js');

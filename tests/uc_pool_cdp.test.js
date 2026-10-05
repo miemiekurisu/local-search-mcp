@@ -19,9 +19,12 @@ function makeFakePage() {
     curr: '',
     closed: false,
     routes: [],
+    handlers: {},
     url: () => page.curr,
     setDefaultTimeout() {},
     addInitScript() {},
+    on(event, cb) { page.handlers[event] = cb; },
+    emit(event, arg) { if (page.handlers[event]) page.handlers[event](arg); },
     route(pattern) { page.routes.push(pattern); },
     async goto(u, opts = {}) { page.curr = u; return {}; },
     async close() { page.closed = true; },
@@ -41,17 +44,24 @@ class FakeContext {
     this.closed = false;
     this.opts = null;
     this.failStorageState = false;
+    // One cookie jar shared by every session, exactly like a real CDP profile.
+    this.jar = [
+      { name: 'cdp1', value: 'v', domain: '.cdp2.example.com', path: '/' },
+      { name: 'other', value: 'o', domain: '.elsewhere.test', path: '/' }
+    ];
   }
   async newPage() { const p = makeFakePage(); p.context = this; this.pages_.push(p); return p; }
   pages() { if (this.closed) throw new Error('context closed'); return this.pages_.filter(p => !p.closed); }
-  async addCookies(c) {}
+  async cookies() { return this.jar.map(c => ({ ...c })); }
+  async addCookies(list) { for (const c of list) this.jar.push({ ...c }); }
+  snapshot() { return { cookies: this.jar.map(c => ({ ...c })), origins: [] }; }
   async storageState({ path: statePath } = {}) {
     if (this.failStorageState) throw new Error('cdp storage fail');
     if (statePath) {
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
-      fs.writeFileSync(statePath, JSON.stringify({ cookies: [{ name: 'cdp1', value: 'v' }], origins: [] }));
+      fs.writeFileSync(statePath, JSON.stringify(this.snapshot()));
     }
-    return { cookies: [], origins: [] };
+    return this.snapshot();
   }
   async close() { this.closed = true; }
 }
@@ -130,6 +140,12 @@ test('CDP: connect, shared-cdp context reuse, resource release non-destructive',
   // saveSessionState through shared context
   const saved = await pool.saveSessionState('cdp2');
   assert.strictEqual(saved.saved, true);
+  // The shared jar holds cookies for two sites; the session may only snapshot the host
+  // it was opened on, never another session's cookie.
+  const savedState = JSON.parse(fs.readFileSync(path.join(stateDir, 'cdp2.json'), 'utf8'));
+  assert.deepStrictEqual(savedState.cookies.map(c => c.name), ['cdp1']);
+  assert.strictEqual(fs.existsSync(path.join(stateDir, 'cdp1.json')), false,
+    'a session with no visited host snapshots nothing instead of the whole profile');
   // release while busy / idle via cdp keeps connectedBrowser alive
   const rel = await pool.releaseSearchResources();
   assert.deepStrictEqual(rel, { released: true });

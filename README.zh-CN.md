@@ -252,6 +252,72 @@ ssh -L 6082:127.0.0.1:6082 user@server
 
 ---
 
+## 多客户端并发与拥塞控制
+
+所有浏览器类引擎共用同一个 Chromium，真正的上限是 `MAX_CONCURRENT_PAGES` 个页面槽位。
+多个客户端同时搜索时，多出来的请求会排队等槽位；下列参数决定「排队」的具体表现，
+使单个卡死的引擎无法长期霸占小机器上唯一的槽位——旧行为是一堵
+`page queue full after 60000ms`，只有重启才能恢复。
+
+| 客户端看到的报错                                | 错误码            | 含义与处理建议                                                                 |
+| ----------------------------------------------- | ----------------- | ------------------------------------------------------------------------------ |
+| `page queue full after 60000ms`                  | `PAGE_BUSY`       | 已等待 `PAGE_QUEUE_TIMEOUT_MS` 仍未拿到槽位。稍后重试，或调大 `MAX_CONCURRENT_PAGES`/该超时。 |
+| `no page slot free within the remaining Nms budget` | `PAGE_BUSY`     | 调用方自身预算（引擎时限/工具超时）短到等不到槽位，未入队即快速失败。              |
+| `page queue is full (N waiting for M slots)`     | `PAGE_QUEUE_FULL` | 等待队列已达 `MAX_PAGE_QUEUE_WAITERS`，快速失败而不是继续堆积请求。              |
+| `DuckDuckGo throttle queue is full`              | `DDG_THROTTLED`   | 超过 `DUCKDUCKGO_MAX_QUEUED` 个客户端在等 DuckDuckGo 的 2 秒最小间隔。            |
+| `ChatGPT browser session is busy (N waiting)`    | `CHATGPT_BUSY`    | 多个客户端共用一个登录标签页，排队数超过 `CHATGPT_MAX_QUEUED`。                   |
+| `search cancelled before <engine>`               | `ABORTED`         | 客户端断开或工具超时，页面已立即释放。                                            |
+
+高负载下的新行为：
+
+- 取消已贯穿全链路：MCP 客户端断开/工具超时，以及 HTTP 客户端中途挂断
+  （`/search`、`/fetch_page`、`/search_and_fetch`、`/research_problem`）都会取消
+  引擎执行、排队中的槽位等待与浏览器抓页并立即关页，不再留下「没人读结果」的任务；
+  OpenAPI 的 `/tools/*` 四条同名路由行为一致。
+- 引擎超时后会真正 abort 该引擎，慢源立刻交还槽位。
+  同一条引擎时限会写进 signal，页面队列据此自我设限：实际等待时间取
+  `PAGE_QUEUE_TIMEOUT_MS` 与「调用方剩余预算」中的较小值。否则在
+  `MAX_CONCURRENT_PAGES=1` 的设备上，短时限引擎会在「仍在排队」时就被自己的定时器
+  砍掉，客户端看到的是假的 `ENGINE_TIMEOUT`（像是引擎故障）而不是拥塞；这个注定失败
+  的等待者还占着队列容量，把后面的客户端挤成 `PAGE_QUEUE_FULL`。
+- 关页收尾也设有上限：`PAGE_TEARDOWN_TIMEOUT_MS` 限制
+  `storageState()` / `goto('about:blank')` / `page.close()` 最多占用槽位多久。
+  页面卡死（被取消或超时的请求最容易留下卡死页面）时，旧行为是一个死页面把
+  单槽位机器的唯一槽位占到重启为止；现在超时即交还槽位，关闭动作在后台完成。
+- 命中验证码/风控而保留不关的页面（`keepPageOpen`）受 `MAX_KEPT_PAGES` 约束：
+  这类页面不计入页面槽位，launch 模式下还各自独占一个 context，多个客户端同时抓风控
+  站点会在 `KEPT_PAGE_TTL_MS`（默认 5 分钟）内攒出数个常驻 Chromium；超限时按
+  「临时页优先、最早优先」淘汰。
+- 关停阶段每一步（chrome-devtools MCP / 浏览器池 / HTTP 服务）受
+  `SHUTDOWN_STEP_TIMEOUT_MS` 约束：卡死的 `page.close()` 或一直不断开的 SSE 客户端
+  曾让 `pool.close()`/`server.close()` 永不返回，进程退不出去就等于整份 Chromium 常驻。
+- 有人排队时跳过关页前的「拟人停留」（`BROWSER_KEEP_LINGER_UNDER_LOAD=true` 可恢复），
+  同时跳过可选的拟人等待动作。
+- 会话 context 按 LRU 驱逐，且绝不驱逐正在执行任务的 context，
+  因此并发客户端下 `MAX_SESSION_CONTEXTS=1` 也是安全的。
+- 空闲的 `/mcp-stream`、`/sse` 会话在 `SESSION_IDLE_TTL_MS` 后回收。
+
+实时饱和度看 `engine_status` → `page_pool`
+（`active_pages` / `max_pages` / `queued_pages` / `max_queued_pages` / `session_contexts`
+/ `kept_pages`）。
+
+ARM 或 2G 内存机器的建议起点：
+
+```ini
+LOW_POWER_DEVICE=true
+MAX_CONCURRENT_PAGES=1
+MAX_SESSION_CONTEXTS=1
+MAX_FETCH_CONCURRENCY=1
+PAGE_QUEUE_TIMEOUT_MS=30000
+MAX_PAGE_QUEUE_WAITERS=4
+MAX_KEPT_PAGES=2
+```
+
+对延迟敏感的调用建议固定 `engines: ["duckduckgo", "wikipedia"]`：
+HTTP 引擎完全不占用浏览器池，浏览器引擎排队时它们依然可用。
+
+---
+
 ## 架构
 
 ### 用户视角

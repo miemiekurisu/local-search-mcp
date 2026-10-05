@@ -37,6 +37,13 @@ export class DeepResearchKernel {
 
     if (this.searchKernel && this.searchKernel.searchAndFetch) {
       for (const q of webQueries) {
+        // Each web query is a search plus page fetches on a shared browser; stop
+        // the loop as soon as the caller is gone instead of burning the whole
+        // web-query budget on results nobody will read.
+        if (args.signal instanceof AbortSignal && args.signal.aborted) {
+          failures.push({ query: q, type: 'web', code: 'ABORTED', message: 'research cancelled by caller' });
+          break;
+        }
         try {
           const maxChars = Math.max(10000, Math.floor(50000 / maxWebQueries));
           const bundle = await this.searchKernel.searchAndFetch({
@@ -44,7 +51,8 @@ export class DeepResearchKernel {
             limit: Math.min(10, Math.ceil(maxWebPages / maxWebQueries)),
             fetch_top_k: Math.max(1, Math.ceil(maxWebPages / maxWebQueries)),
             max_chars_total: maxChars,
-            proxy_profile: args.proxy_profile || args.proxyProfile
+            proxy_profile: args.proxy_profile || args.proxyProfile,
+            signal: args.signal instanceof AbortSignal ? args.signal : null
           });
           webBundles.push({
             query: q,

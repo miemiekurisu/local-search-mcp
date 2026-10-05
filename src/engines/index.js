@@ -1,6 +1,7 @@
 import { CONFIG, readJsonIfExists } from '../config/index.js';
 import { getBrowserSessionByEngine } from '../browser/sessionCatalog.js';
 import { uniqueByUrl } from '../utils/normalize.js';
+import { abortError, markSignalDeadline } from '../utils/abort.js';
 import { searchDuckDuckGo } from './duckduckgo_http.js';
 import { searchBing } from './bing.js';
 import { searchGoogle } from './google.js';
@@ -46,7 +47,10 @@ export class EngineRegistry {
 
   async searchOne(engine, query, opts = {}) {
     const proxy = this.proxyRouter.resolveForEngine(engine);
-    const baseOpts = { ...opts, proxyRouter: this.proxyRouter, proxyProfile: proxy.profile, browserPool: this.browserPool };
+    // Only a real AbortSignal reaches the engines: opts often comes straight off
+    // an HTTP/MCP body, and anything else must not be dereferenced by the pool.
+    const signal = opts.signal instanceof AbortSignal ? opts.signal : null;
+    const baseOpts = { ...opts, signal, proxyRouter: this.proxyRouter, proxyProfile: proxy.profile, browserPool: this.browserPool };
     if (engine === 'duckduckgo') return await searchDuckDuckGo(query, baseOpts);
     if (engine === 'bing') return await searchBing(query, baseOpts);
     if (engine === 'wikipedia') return await searchWikipedia(query, baseOpts);
@@ -66,14 +70,44 @@ export class EngineRegistry {
     const perEngine = [];
     const failedEngines = [];
 
+    // Caller-side cancellation (MCP client gone / tool deadline) stops the whole
+    // fan-out. Without it the engines after the abandoned one would each queue a
+    // fresh browser task that nobody reads, which is exactly the backlog this
+    // registry used to create on a device with one page slot. Non-AbortSignal
+    // values (an HTTP body may contain anything) are ignored, not dereferenced.
+    const callerSignal = opts.signal instanceof AbortSignal ? opts.signal : null;
+
     for (const engine of engines) {
+      if (callerSignal?.aborted) {
+        failures.push(this.buildFailure(engine, abortError(callerSignal, `search cancelled before ${engine}`)));
+        failedEngines.push(engine);
+        continue;
+      }
+      // Each engine gets its own AbortController so that a timeout actually
+      // stops the work instead of only ignoring it. Without this the abandoned
+      // engine keeps its browser page (and on a 1-slot device the whole pool)
+      // until Playwright gives up, which is what turned one slow engine into a
+      // "page queue full" cascade for every other client.
+      const controller = new AbortController();
+      // Publish the budget on the signal so the page queue can bound its own wait
+      // (see markSignalDeadline): queueing is pointless once the remaining budget
+      // cannot cover a navigation, and PAGE_BUSY beats a bogus ENGINE_TIMEOUT.
+      const timeout = engineTimeoutOverride ?? (engine === 'chatgpt' ? 180000 : engine === 'google' ? 150000 : engine === 'deepseek' ? 360000 : engine === 'bing' ? 60000 : 20000);
+      markSignalDeadline(controller.signal, timeout);
+      const relay = () => controller.abort(callerSignal?.reason ?? 'search cancelled by caller');
+      if (callerSignal) callerSignal.addEventListener('abort', relay, { once: true });
       try {
-        const timeout = engineTimeoutOverride ?? (engine === 'chatgpt' ? 180000 : engine === 'google' ? 150000 : engine === 'deepseek' ? 360000 : engine === 'bing' ? 60000 : 20000);
-        const results = await withTimeout(this.searchOne(engine, query, { ...opts, limit: poolLimit }), timeout);
+        const results = await withTimeout(
+          this.searchOne(engine, query, { ...opts, limit: poolLimit, signal: controller.signal }),
+          timeout,
+          () => controller.abort(`engine timeout: ${engine}`)
+        );
         if (results.length > 0) perEngine.push(results);
       } catch (err) {
         failures.push(this.buildFailure(engine, err));
         failedEngines.push(engine);
+      } finally {
+        if (callerSignal) callerSignal.removeEventListener('abort', relay);
       }
     }
 
@@ -155,15 +189,25 @@ export class EngineRegistry {
   }
 }
 
-function withTimeout(promise, ms) {
+function withTimeout(promise, ms, onTimeout = null) {
   let timer;
+  let timedOut = false;
   return Promise.race([
     promise.catch(err => {
-      console.error(`[search] late engine failure: ${err?.message || err}`);
+      // Once the deadline fired the caller already recorded an ENGINE_TIMEOUT
+      // failure and the work was aborted, so this rejection is expected fallout.
+      // Logging it made every slow engine look like a second, unrelated outage.
+      if (!timedOut) console.error(`[search] late engine failure: ${err?.message || err}`);
       throw err;
     }),
     new Promise((_, reject) => {
       timer = setTimeout(() => {
+        timedOut = true;
+        // Cancel the loser of the race. Leaving it running is what starves the
+        // browser page queue on devices that can only afford one page at a time.
+        try {
+          onTimeout?.();
+        } catch { /* the timeout error below is what the caller sees */ }
         const err = new Error(`Engine timed out after ${ms}ms`);
         err.code = 'ENGINE_TIMEOUT';
         reject(err);

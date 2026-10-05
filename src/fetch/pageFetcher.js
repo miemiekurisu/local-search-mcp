@@ -46,6 +46,17 @@ export class PageFetcher {
     const mode = opts.mode || 'auto';
     const maxChars = Number(opts.max_chars || opts.maxChars || 12000);
     const proxyProfile = opts.proxy_profile || opts.proxyProfile || 'auto';
+    // Only a real AbortSignal is honoured: args may come straight off an HTTP/MCP
+    // body. A caller that already gave up must not cost a proxy connection, and
+    // above all not one of the (often single) browser page slots.
+    const signal = opts.signal instanceof AbortSignal ? opts.signal : null;
+    if (signal?.aborted) {
+      return {
+        status: 'failed', url, title: '', text_preview: '', text_chars: 0,
+        artifact_ref: null, fetch_mode: mode,
+        failure_code: 'ABORTED', failure_reason: 'fetch cancelled by caller'
+      };
+    }
     const isPdfUrl = url.split('?')[0].toLowerCase().endsWith('.pdf');
     const attempts = [];
     if (mode === 'http' || mode === 'auto') {
@@ -72,7 +83,7 @@ export class PageFetcher {
         attempts.push({ mode: 'browser', status: 'skipped', code: 'DEADLINE_EXCEEDED', message: 'browser fallback skipped — deadline exceeded' });
       } else {
         try {
-          const result = await this.fetchBrowser(url, { maxChars, proxyProfile, timeoutMs: Math.min(remainingForBrowser, opts.timeout_ms || opts.timeoutMs || CONFIG.browserTimeoutMs) });
+          const result = await this.fetchBrowser(url, { maxChars, proxyProfile, signal, timeoutMs: Math.min(remainingForBrowser, opts.timeout_ms || opts.timeoutMs || CONFIG.browserTimeoutMs) });
           attempts.push(result.attempt);
           return { ...result, attempts };
         } catch (err) {
@@ -226,13 +237,14 @@ export class PageFetcher {
     return '';
   }
 
-  async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs } = {}) {
+  async fetchBrowser(url, { maxChars, proxyProfile, timeoutMs, signal = null } = {}) {
     const proxy = this.proxyRouter.resolve(proxyProfile, url);
     return await this.browserPool.withPage({
       proxyProfile,
       url,
       closeDelayMs: browserFetchCloseDelay(),
-      timeoutMs: (timeoutMs || CONFIG.browserTimeoutMs) + 15000
+      timeoutMs: (timeoutMs || CONFIG.browserTimeoutMs) + 15000,
+      signal
     }, async (page) => {
       // Block slow, content-free resources — text extraction doesn't need them
       await page.route(/\.(png|jpg|jpeg|gif|svg|webp|ico|avif|woff2?|eot|ttf|otf|mp4|webm|mp3|mpeg)(\?|$)/i, route => route.abort().catch(() => {}));

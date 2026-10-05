@@ -2,6 +2,8 @@ import './helpers/mocks.mjs';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
 import { undiciState, makeResp } from './helpers/mocks.mjs';
 
 const und = undiciState();
@@ -71,7 +73,7 @@ test('content kernel cache failure warn paths and openalex detect', async () => 
   // store disabled due to broken dir? ensure enabled but failing ops: place manifest into a FILE path so append throws
   const fs = await import('node:fs');
   await fs.promises.writeFile(cfg.manifest.replace('m.json', ''), '').catch(() => {});
-  const missingDir = fs.mkdtempSync('f');
+  const missingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'uc-content-low-'));
   // simulate store failing writes by pointing manifest at a nonexistent drive path is windows-specific; use a manifest that is a directory
   const broken = storeMod.PaperCacheStore;
   const store = new broken({ enabled: true, dir: missingDir, manifest: missingDir + '/m.json', rawDir: missingDir + '/raw', textDir: missingDir + '/text', sectionDir: missingDir + '/sec', chunkDir: missingDir + '/chunks', tmpDir: missingDir + '/tmp', rawMaxBytes: 1e6, rawTtlDays: 7, textTtlDays: 90 });

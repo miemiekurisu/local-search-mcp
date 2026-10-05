@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { markSignalDeadline } from '../utils/abort.js';
 
 // 默认 240s：DeepSeek + 交叉/聚合验证链在低资源设备（ARM/受限出口）实测
 // 可达 ~135s，120s 会把整链成功的结果砍成 TIMEOUT（35 号机实测）。普通
@@ -65,6 +66,34 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     return Promise.race([promise, timer]);
   }
 
+  // A tool call carries its own cancellation signal from the MCP client, and the
+  // tool timeout above is only a *reporting* deadline. Both must also cancel the
+  // kernel call, otherwise a "Timed out after 240000ms" response leaves a hung
+  // Chromium task holding one of the (usually one or two) page slots forever.
+  // Returns the signal plus a disposer to run in a finally block.
+  function toolSignal(extra, ms) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(`tool deadline after ${ms}ms`), ms);
+    if (typeof timer.unref === 'function') timer.unref();
+    // The tool timeout is also a budget for everything downstream: a queued page
+    // request that cannot fit inside it should fail as PAGE_BUSY, not sit in the
+    // queue until the tool timer answers with a generic timeout.
+    markSignalDeadline(controller.signal, ms);
+    const source = extra?.signal instanceof AbortSignal ? extra.signal : null;
+    const relay = () => controller.abort(source?.reason ?? 'client cancelled tool call');
+    if (source) {
+      if (source.aborted) relay();
+      else source.addEventListener('abort', relay, { once: true });
+    }
+    return {
+      signal: controller.signal,
+      dispose: () => {
+        clearTimeout(timer);
+        if (source) source.removeEventListener('abort', relay);
+      }
+    };
+  }
+
   function wrapHandler(handler) {
     return async (args, extra) => {
       try {
@@ -104,10 +133,15 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
       fetch_mode: z.enum(['auto', 'http', 'browser']).optional().describe('Fetch mode for full text extraction when fetch_top_k > 0. auto=try HTTP then browser fallback.'),
       proxy_profile: z.string().optional().describe('Proxy profile name (default: "auto")')
     }
-  }, wrapHandler(async (args) => {
-    const result = await withTimeout(kernel.searchWeb(args), SEARCH_TOOL_TIMEOUT_MS);
-    await closeBrowserAfterSearch(args);
-    return jsonContent(result);
+  }, wrapHandler(async (args, extra) => {
+    const { signal, dispose } = toolSignal(extra, SEARCH_TOOL_TIMEOUT_MS);
+    try {
+      const result = await withTimeout(kernel.searchWeb({ ...args, signal }), SEARCH_TOOL_TIMEOUT_MS);
+      await closeBrowserAfterSearch(args);
+      return jsonContent(result);
+    } finally {
+      dispose();
+    }
   }));
 
   server.registerTool('fetch_page', {
@@ -134,10 +168,15 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
       max_chars_total: z.number().int().min(2000).max(200000).optional().describe('Total max chars across all fetched pages'),
       proxy_profile: z.string().optional().describe('Proxy profile name')
     }
-  }, wrapHandler(async (args) => {
-    const result = await withTimeout(kernel.searchAndFetch(args), BUNDLE_TOOL_TIMEOUT_MS);
-    await closeBrowserAfterSearch(args);
-    return jsonContent(result);
+  }, wrapHandler(async (args, extra) => {
+    const { signal, dispose } = toolSignal(extra, BUNDLE_TOOL_TIMEOUT_MS);
+    try {
+      const result = await withTimeout(kernel.searchAndFetch({ ...args, signal }), BUNDLE_TOOL_TIMEOUT_MS);
+      await closeBrowserAfterSearch(args);
+      return jsonContent(result);
+    } finally {
+      dispose();
+    }
   }));
 
   server.registerTool('research_problem', {

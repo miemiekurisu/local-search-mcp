@@ -521,3 +521,4 @@ curl -s -H 'Authorization: Bearer sk-xxx' http://127.0.0.1:8765/openapi.json | j
 | 浏览器引擎需要登录才能用 | description 里注明：google/bing/chatgpt 需 noVNC 先登录，默认用 duckduckgo+wikipedia |
 | Open WebUI 不流式返回 | OpenAPI Tool 结果是完整响应，非流式。长任务需内部控制超时 |
 | MCP 现有端点被破坏 | 不改任何现有路由，新增 `/tools/*` + `/openapi.json`，无冲突 |
+| 客户端中途断开，浏览器槽位被「没人读的结果」占住 | 四条搜索路由用 `openApiRoute(fn, { cancellable: true })`，断连时 abort 引擎与页面任务 |

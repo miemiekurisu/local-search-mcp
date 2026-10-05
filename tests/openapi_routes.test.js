@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
+import http from 'node:http';
 import { buildOpenApiSpec } from '../src/openapi/schema.js';
 import { registerOpenApiRoutes, openApiRoute } from '../src/openapi/routes.js';
 import { createApp } from '../src/http_server.js';
@@ -440,5 +441,81 @@ describe('MCP endpoints unaffected by OpenAPI routes', () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
+  });
+});
+
+describe('openApiRoute cancellation', () => {
+  function listen(a) {
+    return new Promise(resolve => {
+      const srv = a.listen(0, '127.0.0.1', () => resolve(srv));
+    });
+  }
+
+  function shutdown(srv) {
+    srv.close();
+    srv.closeAllConnections?.();
+  }
+
+  it('hands the tool an AbortSignal and still reports a failure after an await', async () => {
+    const app = express();
+    app.use(express.json());
+    let seen = null;
+    registerOpenApiRoutes(app, {
+      searchWeb: async (args) => {
+        seen = args.signal;
+        await new Promise(resolve => setTimeout(resolve, 5));
+        throw Object.assign(new Error('engine exploded'), { code: 'ENGINE_TIMEOUT' });
+      }
+    });
+    const server = await listen(app);
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.address().port}/tools/search_web`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'x' })
+      });
+      // The failure must still produce its error body. Reading the auto-destroyed
+      // request stream as a disconnect used to swallow it and hang the client.
+      assert.equal(res.status, 500);
+      assert.equal((await res.json()).error.code, 'ENGINE_TIMEOUT');
+      assert.ok(seen instanceof AbortSignal);
+      assert.equal(seen.aborted, false);
+    } finally {
+      shutdown(server);
+    }
+  });
+
+  it('aborts the tool signal when the client hangs up mid-search', async () => {
+    const app = express();
+    app.use(express.json());
+    let seen = null;
+    registerOpenApiRoutes(app, {
+      searchWeb: (args) => {
+        seen = args.signal;
+        return new Promise(() => {});
+      }
+    });
+    const server = await listen(app);
+    try {
+      const payload = JSON.stringify({ query: 'x' });
+      const req = http.request({
+        host: '127.0.0.1',
+        port: server.address().port,
+        path: '/tools/search_web',
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }
+      });
+      req.on('error', () => {});
+      req.write(payload);
+      req.end();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      assert.ok(seen instanceof AbortSignal, 'the tool did not receive a signal');
+      assert.equal(seen.aborted, false, 'cancelled while the client is still connected');
+      req.destroy();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.equal(seen.aborted, true, 'hanging up did not cancel the tool call');
+    } finally {
+      shutdown(server);
+    }
   });
 });

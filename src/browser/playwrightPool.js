@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { chromium } from 'playwright';
 import { CONFIG, safeJoin } from '../config/index.js';
+import { abortError, signalRemainingMs } from '../utils/abort.js';
 
 const CDP_URL = process.env.CDP_URL || 'http://localhost:9222';
 const USE_EXISTING_CHROME = process.env.USE_EXISTING_CHROME === 'true';
@@ -13,9 +14,38 @@ const MAX_CONCURRENT_PAGES = envInt('MAX_CONCURRENT_PAGES', LOW_POWER_DEVICE ? 1
 const MAX_SESSION_CONTEXTS = envInt('MAX_SESSION_CONTEXTS', LOW_POWER_DEVICE ? 1 : 3, 1);
 const KEPT_PAGE_TTL_MS = envInt('KEPT_PAGE_TTL_MS', 300000, 10000);
 const KEPT_PAGE_CLEANUP_INTERVAL_MS = envInt('KEPT_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
+// Hard cap on parked pages (keepPageOpen). They live outside the page-slot
+// accounting, so without a cap MAX_CONCURRENT_PAGES does not bound resident
+// Chromium at all: every blocked/captcha page that a browser fetch hits parks its
+// page -- and, in launch mode, the whole ephemeral context it owns -- for
+// KEPT_PAGE_TTL_MS (5 min) under a unique key. A handful of parallel clients
+// scraping bot-walled sites therefore leaves a dozen live contexts on a host that
+// was configured for exactly one page, which is how a small device OOMs.
+const MAX_KEPT_PAGES = envInt('MAX_KEPT_PAGES', LOW_POWER_DEVICE ? 2 : 4, 1);
 const SESSION_PAGE_TTL_MS = envInt('SESSION_PAGE_TTL_MS', 600000, 60000);
 const SESSION_PAGE_CLEANUP_INTERVAL_MS = envInt('SESSION_PAGE_CLEANUP_INTERVAL_MS', 60000, 10000);
 const PAGE_QUEUE_TIMEOUT_MS = envInt('PAGE_QUEUE_TIMEOUT_MS', 60000, 1000);
+// A queued attempt needs at least this much of its own budget left to be worth
+// queueing for: with less, even an instant slot hand-off could not navigate and
+// read before the caller gives up, so the queue reports congestion up front.
+const MIN_USEFUL_PAGE_WAIT_MS = 1000;
+// Congestion control for the one shared browser. On a low-power device
+// MAX_CONCURRENT_PAGES is 1, so these two knobs decide what "everyone else is
+// waiting" means: MAX_PAGE_QUEUE_WAITERS bounds the wait queue (overflow fails
+// fast instead of parking dozens of hung HTTP/MCP requests behind one stuck
+// browser), and the anti-bot page linger is skipped while others are queued.
+const MAX_PAGE_QUEUE_WAITERS = envInt('MAX_PAGE_QUEUE_WAITERS', Math.max(4, MAX_CONCURRENT_PAGES * 4), 0);
+const KEEP_LINGER_UNDER_LOAD = process.env.BROWSER_KEEP_LINGER_UNDER_LOAD === 'true';
+// Hard cap on how long *closing* a page may keep holding its slot. storageState(),
+// goto('about:blank') and page.close() on a wedged page block for the Playwright
+// protocol timeout -- tens of seconds, and in the known close() hangs, forever.
+// A cancelled or timed-out request is precisely the case that leaves a wedged page
+// behind, so without this bound cancellation does not actually free the slot: on a
+// MAX_CONCURRENT_PAGES=1 host every later client queues behind a dead page until
+// restart. We wait a bounded moment, release the slot, and let the browser finish
+// closing in the background (a brief second page in the browser is far cheaper
+// than a pool that is permanently stuck at "queue full").
+const PAGE_TEARDOWN_TIMEOUT_MS = envInt('PAGE_TEARDOWN_TIMEOUT_MS', 3000, 100);
 const BROWSER_SIMULATE_BROWSING = process.env.BROWSER_SIMULATE_BROWSING !== 'false';
 const BROWSER_SCROLL_DELAY_MIN_MS = envInt('BROWSER_SCROLL_DELAY_MIN_MS', LOW_POWER_DEVICE ? 120 : 200, 20);
 const BROWSER_SCROLL_DELAY_MAX_MS = envInt('BROWSER_SCROLL_DELAY_MAX_MS', LOW_POWER_DEVICE ? 350 : 700, 50);
@@ -89,6 +119,74 @@ function envInt(name, fallback, min) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// CDP mode shares one Chromium profile across every session, so "the state of
+// session X" only means something if we know which hosts X actually visited.
+// SESSION_DOMAIN_CAP is a safety bound on that bookkeeping, not a policy: sessions
+// come from the four-entry browser-session catalog, so the cap only ever bites if a
+// human roams the whole web through one interactive page.
+const SESSION_DOMAIN_CAP = envInt('BROWSER_SESSION_DOMAIN_CAP', 64, 1);
+const EMPTY_DOMAIN_SCOPE = new Set();
+
+function hostOf(urlLike) {
+  if (!urlLike || typeof urlLike !== 'string') return null;
+  try {
+    return new URL(urlLike).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+// Suffix match in both directions: a cookie scoped to ".bing.com" belongs to a
+// session that visited "www.bing.com", and a cookie scoped to "login.bing.com"
+// belongs to a session that visited "bing.com". Exact eTLD+1 would need a public
+// suffix list; being permissive only *inside* a host the session really visited is
+// what keeps another session's login cookies out of the snapshot.
+function domainInScope(domain, scope) {
+  const d = String(domain || '').replace(/^\./, '').toLowerCase();
+  if (!d.includes('.')) return false;
+  for (const host of scope) {
+    if (host === d || host.endsWith(`.${d}`) || d.endsWith(`.${host}`)) return true;
+  }
+  return false;
+}
+
+function cookieKey(cookie) {
+  return `${cookie?.name}|${String(cookie?.domain || '').toLowerCase()}|${cookie?.path || '/'}`;
+}
+
+// Cookies the live jar already has are left alone. In CDP mode the shared profile is
+// newer than any snapshot on disk -- the user may just have re-logged in through
+// noVNC -- and addCookies() overwrites, so a stale file must never win.
+async function filterLiveCookies(context, cookies) {
+  const live = new Set();
+  try {
+    for (const cookie of await context.cookies()) {
+      live.add(cookieKey(cookie));
+    }
+  } catch {
+    // A jar we cannot read is better seeded from the file than left empty.
+    return cookies;
+  }
+  return cookies.filter((cookie) => !live.has(cookieKey(cookie)));
+}
+
+// Await a teardown step for at most `ms` -- the caller's share of the single
+// PAGE_TEARDOWN_TIMEOUT_MS teardown budget. Timeout and failure both resolve: the
+// caller is on its way out of the page slot and there is nothing useful left to do
+// with a close() that will not answer. The step itself keeps running detached (a
+// late storageState() still writes its file), so nothing is lost -- only the slot
+// is released on time.
+function boundedTeardown(step, ms) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(step).then(() => undefined, () => undefined),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, ms);
+      if (timer.unref) timer.unref();
+    })
+  ]).finally(() => clearTimeout(timer));
 }
 
 // Simulate human browsing before closing a page: multi-step scrolling (with the
@@ -327,9 +425,18 @@ export class PlaywrightPool {
     this.searchContext = null;
     this.sessionContexts = new Map();
     this.sessionPages = new Map();
-    this.hydratedSharedSessions = new Set();
+    // sessionKey -> how many domains of that session have already been restored into
+    // the context. A shared CDP jar has to be revisited when the session starts
+    // touching a new site, so the cache counts domains instead of being a flag.
+    this.hydratedSharedSessions = new Map();
+    // sessionKey -> hosts that session actually visited. In CDP mode this is the
+    // only thing that separates one session's cookies from another's.
+    this._sessionDomains = new Map();
     this._activePageCount = 0;
     this._pageWaiters = [];
+    // sessionKey -> number of in-flight page tasks using that session context.
+    this._contextHeld = new Map();
+    this._lastCapWarnAt = 0;
     this._keptPages = new Map();
     this._keptPagesCleanupTimer = setInterval(() => this._cleanupKeptPages(), KEPT_PAGE_CLEANUP_INTERVAL_MS);
     this._keptPagesCleanupTimer.unref();
@@ -510,24 +617,60 @@ export class PlaywrightPool {
     return this.searchContext;
   }
 
-  async hydrateSessionContext(context, sessionKey) {
-    if (!sessionKey || this.hydratedSharedSessions.has(sessionKey)) {
+  // Remember that a session touched the host of `urlLike`. Everything about CDP
+  // session isolation hangs off this: a session may only read/write the cookies of
+  // the hosts it has actually been to.
+  recordSessionHost(sessionKey, urlLike) {
+    if (!sessionKey) return;
+    const host = hostOf(urlLike);
+    if (!host) return;
+    let scope = this._sessionDomains.get(sessionKey);
+    if (!scope) {
+      scope = new Set();
+      this._sessionDomains.set(sessionKey, scope);
+    }
+    if (scope.size < SESSION_DOMAIN_CAP) scope.add(host);
+  }
+
+  // Restore a saved session into a context. A private (launch-mode) context owns its
+  // file, so the file is applied wholesale, once. The shared CDP context is one
+  // cookie jar for every session and the persistent Chromium profile is its source of
+  // truth (see docs/local-search-mcp-google-session-hardening.md section 4.2), so
+  // there a file may only seed the domains this session actually visited and may
+  // never overwrite a cookie the live profile already has. That used to re-inject
+  // google's cookies from bing.json into the shared jar and roll a logged-in session
+  // back to somebody else's stale snapshot.
+  async hydrateSessionContext(context, sessionKey, { shared = false } = {}) {
+    if (!sessionKey) return;
+    const scope = shared ? (this._sessionDomains.get(sessionKey) || EMPTY_DOMAIN_SCOPE) : null;
+    const scopeSize = scope ? scope.size : Number.POSITIVE_INFINITY;
+    const restored = this.hydratedSharedSessions.get(sessionKey);
+    if (restored !== undefined && restored >= scopeSize) {
       return;
     }
     const statePath = this.getSessionStatePath(sessionKey);
     if (!statePath || !fs.existsSync(statePath)) {
-      this.hydratedSharedSessions.add(sessionKey);
+      this.hydratedSharedSessions.set(sessionKey, scopeSize);
       return;
     }
     try {
       const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-      if (Array.isArray(raw.cookies) && raw.cookies.length > 0) {
-        await context.addCookies(raw.cookies);
+      let cookies = Array.isArray(raw.cookies) ? raw.cookies : [];
+      let origins = Array.isArray(raw.origins) ? raw.origins : [];
+      if (scope) {
+        cookies = cookies.filter((entry) => domainInScope(entry?.domain, scope));
+        origins = origins.filter((entry) => domainInScope(hostOf(entry?.origin), scope));
+        if (cookies.length > 0) {
+          cookies = await filterLiveCookies(context, cookies);
+        }
+      }
+      if (cookies.length > 0) {
+        await context.addCookies(cookies);
       }
       // localStorage restore is OFF by default (see RESTORE_LOCALSTORAGE note):
       // opening a page per origin churns dozens of tabs. Bound to MAX_ORIGINS.
-      if (RESTORE_LOCALSTORAGE && Array.isArray(raw.origins) && raw.origins.length > 0) {
-        for (const originEntry of raw.origins.slice(0, RESTORE_MAX_ORIGINS)) {
+      if (RESTORE_LOCALSTORAGE && origins.length > 0) {
+        for (const originEntry of origins.slice(0, RESTORE_MAX_ORIGINS)) {
           if (!originEntry?.origin || !Array.isArray(originEntry.localStorage) || originEntry.localStorage.length === 0) {
             continue;
           }
@@ -548,11 +691,11 @@ export class PlaywrightPool {
           }
         }
       }
-      console.log(`[browser] restored shared session state for ${sessionKey}`);
+      console.log(`[browser] restored session state for ${sessionKey}${shared ? ` (scope: ${scope.size} hosts)` : ''}`);
     } catch (err) {
       console.log(`[browser] failed to restore shared session ${sessionKey}:`, err.message);
     } finally {
-      this.hydratedSharedSessions.add(sessionKey);
+      this.hydratedSharedSessions.set(sessionKey, scopeSize);
     }
   }
 
@@ -573,13 +716,60 @@ export class PlaywrightPool {
     }
   }
 
+  // Hard cap for parked pages, on top of the TTL sweep above. Oldest first, and a
+  // throwaway (non-session) key goes before a session key: the session ones are the
+  // captcha pages a human may still be finishing through noVNC, the ephemeral ones
+  // are a bot check on some random page nobody is looking at. Closes are
+  // fire-and-forget because this runs while the caller still holds its page slot.
+  _evictKeptPages() {
+    while (this._keptPages.size > MAX_KEPT_PAGES) {
+      const keys = [...this._keptPages.keys()];
+      const victimKey = keys.find((key) => !key.startsWith('session:')) ?? keys[0];
+      const victim = this._keptPages.get(victimKey);
+      this._keptPages.delete(victimKey);
+      victim.page.close().catch(() => {});
+      if (victim.ownsContext) victim.context.close().catch(() => {});
+    }
+  }
+
   _evictSessionContext() {
     if (this.sessionContexts.size < MAX_SESSION_CONTEXTS) return;
-    const oldestKey = this.sessionContexts.keys().next().value;
-    if (oldestKey) {
-      const oldest = this.sessionContexts.get(oldestKey);
-      oldest.context.close().catch(() => {});
-      this.sessionContexts.delete(oldestKey);
+    // LRU, but the cap is deliberately soft: closing a context that another
+    // in-flight task is navigating in (the shipped compose file sets
+    // MAX_SESSION_CONTEXTS=1, so a bing and a google run alternate) used to kill
+    // the other client's search with "target closed". Busy contexts are skipped
+    // and the cap is exceeded briefly instead.
+    let victimKey = null;
+    let victimUsedAt = Infinity;
+    for (const [key, entry] of this.sessionContexts) {
+      if ((this._contextHeld.get(key) || 0) > 0) continue;
+      if (this._sessionPageIsLive(key)) continue;
+      if (entry.lastUsedAt < victimUsedAt) {
+        victimKey = key;
+        victimUsedAt = entry.lastUsedAt;
+      }
+    }
+    if (!victimKey) {
+      if (Date.now() - this._lastCapWarnAt > 30000) {
+        this._lastCapWarnAt = Date.now();
+        console.log(`[browser] session-context cap (${MAX_SESSION_CONTEXTS}) reached while every context is busy; running one extra context instead of closing a running task`);
+      }
+      return;
+    }
+    const victim = this.sessionContexts.get(victimKey);
+    victim.context.close().catch(() => {});
+    this.sessionContexts.delete(victimKey);
+    this._contextHeld.delete(victimKey);
+  }
+
+  // A pinned interactive page (noVNC session page) also counts as "in use".
+  _sessionPageIsLive(sessionKey) {
+    const entry = this.sessionPages.get(sessionKey);
+    if (!entry) return false;
+    try {
+      return !entry.page.isClosed();
+    } catch {
+      return false;
     }
   }
 
@@ -588,7 +778,8 @@ export class PlaywrightPool {
 
     if (this.connectedBrowser) {
       const context = await this.getSharedContext();
-      await this.hydrateSessionContext(context, sessionKey);
+      this.recordSessionHost(sessionKey, url);
+      await this.hydrateSessionContext(context, sessionKey, { shared: true });
       return { context, reusable: true, ownsContext: false, mode: 'shared-cdp' };
     }
 
@@ -596,6 +787,7 @@ export class PlaywrightPool {
     if (existing) {
       try {
         existing.context.pages();
+        existing.lastUsedAt = Date.now();
         return { context: existing.context, reusable: true, ownsContext: false, mode: 'persistent-context' };
       } catch {
         this.sessionContexts.delete(sessionKey);
@@ -606,7 +798,7 @@ export class PlaywrightPool {
     const proxy = this.proxyRouter?.resolve(proxyProfile, url)?.playwrightProxy;
     const context = await browser.newContext(this.buildContextOptions(proxy, sessionKey));
     await this.hydrateSessionContext(context, sessionKey);
-    this.sessionContexts.set(sessionKey, { context, createdAt: Date.now() });
+    this.sessionContexts.set(sessionKey, { context, createdAt: Date.now(), lastUsedAt: Date.now() });
     return { context, reusable: true, ownsContext: false, mode: 'persistent-context' };
   }
 
@@ -619,6 +811,9 @@ export class PlaywrightPool {
   async persistContextState(context, sessionKey) {
     const statePath = this.getSessionStatePath(sessionKey);
     if (!statePath || !context) return null;
+    if (context === this.sharedContext) {
+      return this.persistSharedContextState(context, sessionKey, statePath);
+    }
     try {
       await context.storageState({ path: statePath });
       return statePath;
@@ -628,40 +823,169 @@ export class PlaywrightPool {
     }
   }
 
-  async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false, closeDelayMs = 0, timeoutMs = 0 } = {}, fn) {
-    let pageAcquired = false;
-    if (this._activePageCount >= MAX_CONCURRENT_PAGES) {
-      let waiterResolve, waiterReject;
-      let timeoutTimerId;
-      const waitPromise = new Promise((resolve, reject) => { waiterResolve = resolve; waiterReject = reject; this._pageWaiters.push({ resolve: waiterResolve, reject: waiterReject }); });
-      const timeoutPromise = new Promise((_, reject) => {
-        timeoutTimerId = setTimeout(() => reject(Object.assign(new Error(`page queue full after ${PAGE_QUEUE_TIMEOUT_MS}ms`), { code: 'PAGE_BUSY' })), PAGE_QUEUE_TIMEOUT_MS);
-        if (timeoutTimerId?.unref) timeoutTimerId.unref();
-      });
-      try {
-        await Promise.race([waitPromise, timeoutPromise]);
-      } catch (err) {
-        clearTimeout(timeoutTimerId);
-        const idx = this._pageWaiters.findIndex(w => w.resolve === waiterResolve);
-        if (idx !== -1) this._pageWaiters.splice(idx, 1);
-        throw err;
-      } finally {
-        clearTimeout(timeoutTimerId);
-      }
+  // A shared CDP context is the whole browser profile, not "session X". Writing
+  // storageState() into <sessionKey>.json used to copy google's cookies into
+  // bing.json (and every other session file), which the next hydrate then pushed back
+  // into the shared jar. A session may only snapshot the hosts it visited itself; the
+  // persistent profile stays the source of truth.
+  async persistSharedContextState(context, sessionKey, statePath) {
+    const scope = this._sessionDomains.get(sessionKey);
+    if (!scope || scope.size === 0) {
+      console.log(`[browser] skipped shared snapshot for ${sessionKey}: no visited host to scope it to`);
+      return null;
     }
+    try {
+      const state = await context.storageState();
+      const cookies = (state.cookies || []).filter((cookie) => domainInScope(cookie?.domain, scope));
+      const origins = (state.origins || []).filter((entry) => domainInScope(hostOf(entry?.origin), scope));
+      // Nothing attributable to this session: keep the previous file rather than
+      // replacing a usable snapshot with an empty one.
+      if (cookies.length === 0 && origins.length === 0) return null;
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      // Every search of the session rewrites this file and, on a shared profile, two
+      // clients can do it at once -- publish atomically so a reader never sees half.
+      const tmpPath = `${statePath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify({ cookies, origins }));
+      fs.renameSync(tmpPath, statePath);
+      return statePath;
+    } catch (err) {
+      console.log(`[browser] failed to save session ${sessionKey}:`, err.message);
+      return null;
+    }
+  }
 
-    this._activePageCount++;
-    pageAcquired = true;
+  // Page-slot semaphore: strict FIFO, bounded queue, cancellable.
+  //
+  // The hand-off transfers the slot (the winner never re-counts), so a freed slot
+  // always goes to the oldest waiter and never to a late arrival that happens to
+  // check while the count dips. That overshoot used to run more pages than
+  // MAX_CONCURRENT_PAGES on purpose-built low-power setups (cap = 1), which is
+  // exactly what the cap exists to prevent. Hand-offs are only consumed by
+  // waiters that are still alive, so a queue timeout racing a release can no
+  // longer strand a slot forever (that leak made "page queue full" permanent
+  // until restart). Overflow is rejected up front instead of queueing forever.
+  _acquirePageSlot(signal) {
+    if (signal?.aborted) return Promise.reject(abortError(signal));
+    if (this._activePageCount < MAX_CONCURRENT_PAGES && this._pageWaiters.length === 0) {
+      this._activePageCount++;
+      return Promise.resolve();
+    }
+    if (this._pageWaiters.length >= MAX_PAGE_QUEUE_WAITERS) {
+      return Promise.reject(Object.assign(
+        new Error(`page queue is full (${this._pageWaiters.length} waiting for ${MAX_CONCURRENT_PAGES} page slots); retry later`),
+        { code: 'PAGE_QUEUE_FULL', details: this.pageQueueStatus() }
+      ));
+    }
+    // A caller that carries a budget (one engine attempt, one tool call) must not
+    // queue past it: its own deadline would fire while it still holds a queue
+    // position, which surfaces as a bogus ENGINE_TIMEOUT and starves the next
+    // client of queue capacity -- exactly the cascade a 1-slot host produces.
+    const remainingMs = signalRemainingMs(signal);
+    const waitMs = remainingMs === null
+      ? PAGE_QUEUE_TIMEOUT_MS
+      : Math.min(PAGE_QUEUE_TIMEOUT_MS, remainingMs);
+    if (remainingMs !== null && waitMs < MIN_USEFUL_PAGE_WAIT_MS) {
+      return Promise.reject(Object.assign(
+        new Error(`no page slot free within the remaining ${Math.round(remainingMs)}ms budget`),
+        {
+          code: 'PAGE_BUSY',
+          details: {
+            ...this.pageQueueStatus(),
+            waited_ms: 0,
+            budget_ms: Math.round(remainingMs),
+            retry_hint: 'All browser page slots were busy and this request had no time left to wait. Retry later, raise MAX_CONCURRENT_PAGES on a host that can afford it, or reduce parallel clients.'
+          }
+        }
+      ));
+    }
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, settled: false, timer: null, signal: signal || null, onAbort: null };
+      const drop = () => {
+        waiter.settled = true;
+        if (waiter.timer) clearTimeout(waiter.timer);
+        if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort);
+        const idx = this._pageWaiters.indexOf(waiter);
+        if (idx !== -1) this._pageWaiters.splice(idx, 1);
+      };
+      waiter.onAbort = () => {
+        if (waiter.settled) return;
+        drop();
+        reject(abortError(signal));
+      };
+      waiter.timer = setTimeout(() => {
+        if (waiter.settled) return;
+        drop();
+        reject(Object.assign(new Error(`page queue full after ${waitMs}ms`), {
+          code: 'PAGE_BUSY',
+          details: {
+            ...this.pageQueueStatus(),
+            waited_ms: waitMs,
+            retry_hint: 'All browser page slots were busy. Retry later, raise MAX_CONCURRENT_PAGES / PAGE_QUEUE_TIMEOUT_MS, or reduce parallel clients.'
+          }
+        }));
+      }, waitMs);
+      if (waiter.timer?.unref) waiter.timer.unref();
+      if (waiter.signal) waiter.signal.addEventListener('abort', waiter.onAbort, { once: true });
+      this._pageWaiters.push(waiter);
+    });
+  }
+
+  _releasePageSlot() {
+    if (this._activePageCount > 0) this._activePageCount--;
+    while (this._activePageCount < MAX_CONCURRENT_PAGES && this._pageWaiters.length > 0) {
+      const waiter = this._pageWaiters.shift();
+      if (waiter.settled) continue; // already timed out / aborted; hand the slot on
+      waiter.settled = true;
+      if (waiter.timer) clearTimeout(waiter.timer);
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort);
+      this._activePageCount++; // the slot travels with this hand-off
+      waiter.resolve();
+    }
+  }
+
+  // Cheap saturation snapshot for engine_status / failure details.
+  pageQueueStatus() {
+    return {
+      active_pages: this._activePageCount,
+      max_pages: MAX_CONCURRENT_PAGES,
+      queued_pages: this._pageWaiters.length,
+      max_queued_pages: MAX_PAGE_QUEUE_WAITERS,
+      page_queue_timeout_ms: PAGE_QUEUE_TIMEOUT_MS,
+      session_contexts: this.sessionContexts.size,
+      max_session_contexts: MAX_SESSION_CONTEXTS,
+      // Parked (keepPageOpen) pages are live Chromium that no slot counter sees, so
+      // without these two numbers engine_status cannot explain why a 1-slot host is
+      // out of memory.
+      kept_pages: this._keptPages.size,
+      max_kept_pages: MAX_KEPT_PAGES,
+      low_power_device: LOW_POWER_DEVICE
+    };
+  }
+
+  // True while somebody is queuing for a page: engines use it to drop optional
+  // human-like waiting instead of burning CPU/latency the next client needs.
+  isContended() {
+    return this._pageWaiters.length > 0;
+  }
+
+  async withPage({ proxyProfile = 'auto', url = '', sessionKey = null, reuseSession = false, closeDelayMs = 0, timeoutMs = 0, signal = null } = {}, fn) {
+    await this._acquirePageSlot(signal);
     let context;
     let ownsContext = false;
     let page = null;
+    let heldSessionKey = null;
     const isCdpMode = Boolean(this.connectedBrowser);
 
     try {
       if (sessionKey && reuseSession) {
         ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
+        heldSessionKey = sessionKey;
+        this._contextHeld.set(sessionKey, (this._contextHeld.get(sessionKey) || 0) + 1);
       } else if (isCdpMode) {
         context = await this.getSearchContext();
+        // The teardown below may snapshot this session out of the shared jar, so the
+        // target host has to be inside the session scope before that happens.
+        this.recordSessionHost(sessionKey, url);
       } else {
         context = await this.createEphemeralContext({ proxyProfile, url, sessionKey });
         ownsContext = true;
@@ -674,25 +998,36 @@ export class PlaywrightPool {
       let keepPageOpen = false;
       let aborted = false;
       let fnTimer;
+      let onFnAbort = null;
       try {
         // Wrap fn so a hung browser task can be aborted: on timeout the page is
         // closed below, releasing the page slot for queued waiters (prevents
         // the pool from being starved by a stuck engine).
         const fnPromise = Promise.resolve().then(() => fn(page, context));
         fnPromise.catch(() => {}); // swallow late rejection after timeout path
-        let result;
+        const racers = [fnPromise];
         if (timeoutMs > 0) {
-          const timeoutP = new Promise((_, reject) => {
+          racers.push(new Promise((_, reject) => {
             fnTimer = setTimeout(() => {
               aborted = true;
               reject(Object.assign(new Error(`page task timed out after ${timeoutMs}ms`), { code: 'PAGE_TASK_TIMEOUT' }));
             }, timeoutMs);
             if (fnTimer?.unref) fnTimer.unref();
-          });
-          result = await Promise.race([fnPromise, timeoutP]);
-        } else {
-          result = await fnPromise;
+          }));
         }
+        if (signal) {
+          // The caller gave up (engine timeout / client gone). Close the page
+          // now instead of finishing work nobody waits for while the only page
+          // slot of a low-power device stays occupied.
+          racers.push(new Promise((_, reject) => {
+            onFnAbort = () => {
+              aborted = true;
+              reject(abortError(signal));
+            };
+            signal.addEventListener('abort', onFnAbort, { once: true });
+          }));
+        }
+        const result = racers.length === 1 ? await fnPromise : await Promise.race(racers);
         if (result && result.keepPageOpen) {
           keepPageOpen = true;
         }
@@ -704,8 +1039,16 @@ export class PlaywrightPool {
         throw err;
       } finally {
         clearTimeout(fnTimer);
+        if (signal && onFnAbort) signal.removeEventListener('abort', onFnAbort);
+        // One budget for the entire teardown instead of one per step, so the
+        // worst case a cancelled request costs the next client is
+        // PAGE_TEARDOWN_TIMEOUT_MS in total.
+        const teardownDeadline = Date.now() + PAGE_TEARDOWN_TIMEOUT_MS;
+        const teardownMs = () => Math.max(0, teardownDeadline - Date.now());
         if (sessionKey) {
-          await this.persistContextState(context, sessionKey);
+          // Cookie persistence is worth waiting for, but not worth stalling the
+          // whole pool for: it runs on the same context we are about to close.
+          await boundedTeardown(this.persistContextState(context, sessionKey), teardownMs());
         }
         if (keepPageOpen) {
           const key = sessionKey ? `session:${sessionKey}` : `_ephemeral_${Date.now()}`;
@@ -715,12 +1058,17 @@ export class PlaywrightPool {
             if (existing.ownsContext) existing.context.close().catch(() => {});
           }
           this._keptPages.set(key, { page, context, ownsContext, createdAt: Date.now() });
-          if (this._keptPages.size > 3) this._cleanupKeptPages();
+          // The TTL sweep is not a bound (an entry is only ever dropped after
+          // KEPT_PAGE_TTL_MS), so enforce the resident-page cap on every park.
+          if (this._keptPages.size > MAX_KEPT_PAGES) this._evictKeptPages();
         } else {
           // Let the visitor "linger" before closing (randomized, slows down
           // page open/close cadence and looks more human). closeDelayMs may be
           // a single ms value (jittered +/-40%) or a [min, max] range.
-          if (!aborted && closeDelayMs) {
+          // Skipped while other requests are queued: 1.5-12s of fake reading per
+          // visit is the largest controllable share of a page slot on a busy
+          // device. BROWSER_KEEP_LINGER_UNDER_LOAD=true restores the old timing.
+          if (!aborted && closeDelayMs && (KEEP_LINGER_UNDER_LOAD || this._pageWaiters.length === 0)) {
             let minMs, maxMs;
             if (Array.isArray(closeDelayMs)) {
               minMs = Math.max(0, closeDelayMs[0]);
@@ -737,19 +1085,20 @@ export class PlaywrightPool {
           // beforeunload dialogs (Playwright #11581), stalled route handlers
           // (#6317), and pages with websockets/long-polling/SSE that keep
           // the browser spinner active (network never reaches "idle").
-          await page.goto('about:blank', { waitUntil: 'domcontentloaded' }).catch(() => {});
-          await page.close().catch(() => {});
+          await boundedTeardown(page.goto('about:blank', { waitUntil: 'domcontentloaded' }), teardownMs());
+          await boundedTeardown(page.close(), teardownMs());
           if (ownsContext) {
-            await context.close().catch(() => {});
+            await boundedTeardown(context.close(), teardownMs());
           }
         }
       }
     } finally {
-      if (pageAcquired) this._activePageCount--;
-      if (this._pageWaiters.length > 0) {
-        const next = this._pageWaiters.shift();
-        next.resolve();
+      if (heldSessionKey) {
+        const held = (this._contextHeld.get(heldSessionKey) || 1) - 1;
+        if (held > 0) this._contextHeld.set(heldSessionKey, held);
+        else this._contextHeld.delete(heldSessionKey);
       }
+      this._releasePageSlot();
     }
   }
 
@@ -760,11 +1109,15 @@ export class PlaywrightPool {
 
     let context;
     let mode = 'persistent-context';
-    const isCdpMode = Boolean(this.connectedBrowser);
     await this.getBrowser();
+    // Asked after the connect: on a cold pool connectedBrowser is only set by
+    // getBrowser(), and reading it earlier made a CDP-mode interactive page try
+    // browser.newContext() -- which a CDP-connected browser refuses.
+    const isCdpMode = Boolean(this.connectedBrowser);
     if (isCdpMode) {
       context = await this.getSharedContext();
-      await this.hydrateSessionContext(context, sessionKey);
+      this.recordSessionHost(sessionKey, url);
+      await this.hydrateSessionContext(context, sessionKey, { shared: true });
       mode = 'shared-cdp';
     } else {
       ({ context } = await this.getSessionContext(sessionKey, { proxyProfile, url }));
@@ -785,6 +1138,13 @@ export class PlaywrightPool {
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
       await applyStealthIfNeeded(page, { isCdpMode });
       applySessionResourcePolicy(page, { isCdpMode });
+      if (isCdpMode) {
+        // The interactive page exists so a human can log in / solve a captcha, and
+        // those flows bounce across hosts. Whatever the human lands on becomes part of
+        // this session's scope, otherwise the cookies that login just set are not its
+        // own to save.
+        page.on('framenavigated', (frame) => this.recordSessionHost(sessionKey, frame?.url?.()));
+      }
       pageEntry = { page, lastAccessedAt: Date.now() };
       this.sessionPages.set(sessionKey, pageEntry);
     } else {
@@ -892,10 +1252,14 @@ export class PlaywrightPool {
   async close() {
     clearInterval(this._keptPagesCleanupTimer);
     clearInterval(this._sessionPagesCleanupTimer);
-    for (const waiter of this._pageWaiters) {
+    for (const waiter of this._pageWaiters.splice(0, this._pageWaiters.length)) {
+      if (waiter.settled) continue;
+      waiter.settled = true;
+      if (waiter.timer) clearTimeout(waiter.timer);
+      if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort);
       waiter.reject(Object.assign(new Error('browser pool shutting down'), { code: 'SHUTDOWN' }));
     }
-    this._pageWaiters = [];
+    this._contextHeld.clear();
     await this._resetKeptPages();
     for (const entry of this.sessionPages.values()) {
       await entry.page.close().catch(() => {});

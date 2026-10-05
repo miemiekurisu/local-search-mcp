@@ -76,12 +76,20 @@ test('searchWeb fetch failures are captured when fetchPage throws', async () => 
 test('searchWeb pre-fetch deadline produces FETCH_TIMEOUT rows', async () => {
   st.responses = [makeResp(wikiFeed([{ title: 'Rust lang', snippet: 'systems' }]))];
   const realNow = Date.now.bind(Date);
-  let shifted = false;
+  // The kernel reads the clock twice per fetch round: once to arm the 60s deadline,
+  // once to check it, so the jump has to land between those two reads. Counting
+  // *every* Date.now() call (the old trick) puts the jump in the wrong place as soon
+  // as an unrelated module reads the clock first -- publishing an engine budget is
+  // enough -- so only reads issued directly by the kernel are counted. The direct
+  // caller frame matters: the async stack still carries the kernel frame for reads
+  // made deep inside an engine call (frame [0] is the Error, [1] this stub).
+  let kernelReads = 0;
   Date.now = () => {
     const real = realNow();
-    if (shifted) return real + 70000;
-    shifted = true;
-    return real;
+    const caller = String(new Error().stack || '').split('\n')[2] || '';
+    if (!caller.includes('searchKernel.js')) return real;
+    kernelReads += 1;
+    return kernelReads > 1 ? real + 70000 : real;
   };
   try {
     const out = await kernel.searchWeb({ query: 'deadline jump', engines: ['wikipedia'], fetch_top_k: 1 });

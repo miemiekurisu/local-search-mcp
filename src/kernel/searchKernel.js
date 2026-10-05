@@ -23,7 +23,8 @@ export class SearchKernel {
       limit,
       engines,
       proxyProfile: args.proxy_profile || args.proxyProfile || 'auto',
-      timeoutMs: args.timeout_ms || args.timeoutMs
+      timeoutMs: args.timeout_ms || args.timeoutMs,
+      signal: args.signal instanceof AbortSignal ? args.signal : null
     });
     const fetchTopK = Math.min(search.results.length, Math.max(0, Math.floor(Number(args.fetch_top_k ?? args.fetchTopK ?? 5)) || 0));
     const maxCharsTotal = Math.max(1000, Math.min(300000, Math.floor(Number(args.max_chars_total || args.maxCharsTotal || 30000)) || 30000));
@@ -56,7 +57,8 @@ export class SearchKernel {
             proxy_profile: proxyProfile,
             max_chars: Math.max(2000, Math.floor(maxCharsTotal / Math.max(1, fetchTopK))),
             timeout_ms: args.timeout_ms || args.timeoutMs,
-            deadline: deadline
+            deadline: deadline,
+            signal: args.signal instanceof AbortSignal ? args.signal : null
           });
           return { result, page, status: 'success' };
         } catch (err) {
@@ -152,6 +154,13 @@ export class SearchKernel {
         failures.push({ query: q, code: 'RESEARCH_TIMEOUT', message: 'Research total time limit exceeded' });
         break;
       }
+      // Multi-query research is the heaviest browser-pool user there is (up to six
+      // searches plus their page fetches, over minutes). A caller that stopped
+      // listening must stop the loop, not just the current query.
+      if (args.signal instanceof AbortSignal && args.signal.aborted) {
+        failures.push({ query: q, code: 'ABORTED', message: 'research cancelled by caller' });
+        break;
+      }
       let queryTimerId;
       try {
         const remaining = Math.max(15000, researchDeadline - Date.now());
@@ -168,7 +177,8 @@ export class SearchKernel {
             limit: Math.min(20, Number(budget.max_results_per_query || 8)),
             fetch_top_k: Math.max(1, Math.floor(maxPages / maxQueries)),
             max_chars_total: Math.floor(Number(budget.max_chars_total || 50000) / maxQueries),
-            proxy_profile: args.network_policy?.proxy_profile || args.proxy_profile || 'auto'
+            proxy_profile: args.network_policy?.proxy_profile || args.proxy_profile || 'auto',
+            signal: args.signal instanceof AbortSignal ? args.signal : null
           }),
           timeoutPromise
         ]);
@@ -197,6 +207,9 @@ export class SearchKernel {
         ...this.browserPool.sessionStatus(session.id, { redact: true })
       })),
       proxy_profiles: this.proxyRouter.status(),
+      // Live browser-pool saturation: the first thing to check when several
+      // clients report slow or refused searches on a small machine.
+      page_pool: typeof this.browserPool.pageQueueStatus === 'function' ? this.browserPool.pageQueueStatus() : null,
       limits: { max_search_limit: CONFIG.maxSearchLimit, max_fetch_concurrency: CONFIG.maxFetchConcurrency }
     };
   }

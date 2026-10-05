@@ -28,6 +28,7 @@ const proxyRouter = {
 function makeBrowserPoolStub({ text = 'x'.repeat(200) + ' meaningful body content ' } = {}) {
   return {
     sessionStatus: () => ({}),
+    pageQueueStatus: () => ({ active_pages: 1, max_pages: 2, queued_pages: 3 }),
     withPage: async (opts, fn) => fn({
       curr: '',
       routes: [],
@@ -253,6 +254,8 @@ test('SearchKernel getArtifact + engineStatus + browserSessions', () => {
   assert.strictEqual(status.status, 'ok');
   assert.ok(status.engines.length > 0);
   assert.ok(status.browser_sessions.length > 0);
+  assert.deepStrictEqual(status.page_pool, { active_pages: 1, max_pages: 2, queued_pages: 3 },
+    'engine_status exposes live page-slot saturation');
   const sessions = kernel.browserSessions();
   assert.ok(sessions.sessions.length > 0);
 });

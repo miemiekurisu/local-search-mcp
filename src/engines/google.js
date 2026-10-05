@@ -126,7 +126,8 @@ export async function searchGoogleBrowser(query, opts = {}) {
         sessionKey: 'google',
         reuseSession: true,
         closeDelayMs: [7000, 12000],
-        timeoutMs: 140000
+        timeoutMs: 140000,
+        signal: opts.signal || null
       }, async (page) => {
         let parsed;
         try {

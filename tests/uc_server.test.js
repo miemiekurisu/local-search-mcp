@@ -116,7 +116,12 @@ test('post routes pass body to kernel and wrap errors with redaction', async () 
     const okBody = await ok.json();
     assert.equal(okBody.ok, true);
     assert.deepEqual(okBody.result, { items: [{ title: 'T' }], query: 'q1' });
-    assert.deepEqual(calls.searchWeb, { query: 'q1', limit: 3 });
+    // /search is a cancellable route: the kernel also gets an AbortSignal that
+    // stays idle as long as the client is still listening.
+    const { signal: searchSignal, ...searchWebArgs } = calls.searchWeb;
+    assert.equal(searchSignal instanceof AbortSignal, true);
+    assert.equal(searchSignal.aborted, false);
+    assert.deepEqual(searchWebArgs, { query: 'q1', limit: 3 });
 
     const research = await fetch(`${base}/research_problem`, {
       method: 'POST', headers: hdrs(),

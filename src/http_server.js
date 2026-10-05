@@ -101,12 +101,41 @@ export function createApp(kernelOverride, browserPoolOverride) {
     return redacted;
   }
 
-  function asyncRoute(fn) {
+  // Cancellation for the expensive routes. An agent that times out or dies used
+  // to leave the whole search running: the engines kept queueing for a browser
+  // page slot that nobody was waiting for, which is what starves a host with one
+  // or two slots. The MCP path already honours the client signal; this gives the
+  // plain HTTP endpoints the same behaviour.
+  function asyncRoute(fn, { cancellable = false } = {}) {
     return async (req, res) => {
+      let args = req.body || req.query || {};
+      let onClose = null;
+      // Whether the caller hung up *before* we finished answering. Node
+      // auto-destroys an IncomingMessage as soon as its body has been read, so
+      // req.destroyed is true for every async handler and says nothing about the
+      // client; swallowing errors on that would leave callers waiting for a
+      // response that never comes. The 'close' event alone is not enough either
+      // because it also fires after a normal end().
+      let clientGone = false;
+      if (cancellable) {
+        const controller = new AbortController();
+        onClose = () => {
+          // 'close' also fires after a normal response — only an early one means
+          // the caller stopped caring.
+          if (!res.writableEnded) {
+            clientGone = true;
+            controller.abort('HTTP client disconnected');
+          }
+        };
+        res.on('close', onClose);
+        args = { ...args, signal: controller.signal };
+      }
       try {
-        const result = await fn(req.body || req.query || {});
+        const result = await fn(args);
         res.json({ ok: true, result });
       } catch (err) {
+        // Nothing to report when the caller already hung up.
+        if (clientGone || res.writableEnded || res.headersSent) return;
         const errorObject = err && typeof err === 'object' ? err : {};
         res.status(500).json({
           ok: false,
@@ -118,6 +147,8 @@ export function createApp(kernelOverride, browserPoolOverride) {
             stack: process.env.NODE_ENV === 'production' ? undefined : errorObject.stack
           }
         });
+      } finally {
+        if (onClose) res.removeListener('close', onClose);
       }
     };
   }
@@ -126,16 +157,28 @@ export function createApp(kernelOverride, browserPoolOverride) {
   app.get('/browser_sessions', asyncRoute(async () => kernel.browserSessions()));
   app.post('/browser_sessions/open', asyncRoute(args => kernel.openBrowserSession(args)));
   app.post('/browser_sessions/save', asyncRoute(args => kernel.saveBrowserSession(args)));
-  app.post('/search', asyncRoute(args => kernel.searchWeb(args)));
-  app.post('/fetch_page', asyncRoute(args => kernel.fetchPage(args)));
-  app.post('/search_and_fetch', asyncRoute(args => kernel.searchAndFetch(args)));
-  app.post('/research_problem', asyncRoute(args => kernel.researchProblem(args)));
+  app.post('/search', asyncRoute(args => kernel.searchWeb(args), { cancellable: true }));
+  app.post('/fetch_page', asyncRoute(args => kernel.fetchPage(args), { cancellable: true }));
+  app.post('/search_and_fetch', asyncRoute(args => kernel.searchAndFetch(args), { cancellable: true }));
+  app.post('/research_problem', asyncRoute(args => kernel.researchProblem(args), { cancellable: true }));
   app.post('/artifact', asyncRoute(args => kernel.getArtifact(args)));
 
   registerOpenApiRoutes(app, kernel);
 
   // MCP over HTTP — custom JSON-RPC endpoint
   app.post('/mcp', async (req, res) => {
+    // This endpoint calls the kernel directly instead of going through the MCP
+    // server wrapper, so it needs cancellation of its own: a client that drops a
+    // JSON-RPC connection used to leave a full search (and, for research_problem,
+    // up to six of them plus their page fetches) running against the browser pool.
+    const requestCancel = new AbortController();
+    let clientGone = false;
+    res.once('close', () => {
+      if (!res.writableEnded) {
+        clientGone = true;
+        requestCancel.abort('MCP HTTP client disconnected');
+      }
+    });
     try {
       const message = req.body;
       if (!message || !message.jsonrpc || !message.method) {
@@ -296,22 +339,22 @@ export function createApp(kernelOverride, browserPoolOverride) {
 
         switch (name) {
           case 'search_web': {
-            const r = await kernel.searchWeb(args || {});
+            const r = await kernel.searchWeb({ ...(args || {}), signal: requestCancel.signal });
             result = { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
             break;
           }
           case 'fetch_page': {
-            const r = await kernel.fetchPage(args || {});
+            const r = await kernel.fetchPage({ ...(args || {}), signal: requestCancel.signal });
             result = { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
             break;
           }
           case 'search_and_fetch': {
-            const r = await kernel.searchAndFetch(args || {});
+            const r = await kernel.searchAndFetch({ ...(args || {}), signal: requestCancel.signal });
             result = { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
             break;
           }
           case 'research_problem': {
-            const r = await kernel.researchProblem(args || {});
+            const r = await kernel.researchProblem({ ...(args || {}), signal: requestCancel.signal });
             result = { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
             break;
           }
@@ -362,6 +405,12 @@ export function createApp(kernelOverride, browserPoolOverride) {
         error: { code: -32601, message: `Method not found: ${message.method}` }
       });
     } catch (err) {
+      if (clientGone || res.writableEnded || res.headersSent) {
+        // The caller hung up; the rejection is our own cancellation. A full stack
+        // dump here would be the same log noise this endpoint already produced.
+        console.log(`[mcp-http] request cancelled (${err.code || err.message})`);
+        return;
+      }
       console.error('[mcp-http] error:', err);
       res.status(500).json({
         jsonrpc: '2.0',
@@ -375,14 +424,22 @@ export function createApp(kernelOverride, browserPoolOverride) {
   // Each session gets its own transport + McpServer, registered by onsessioninitialized.
   // This follows the SDK's simpleStreamableHttp.js pattern to support multiple clients
   // (e.g. ChatBox uses StreamableHTTPClientTransport with SSE fallback).
-  const MAX_STREAMABLE_SESSIONS = 500;
-  const SESSION_TTL_MS = 3600000;
+  const MAX_STREAMABLE_SESSIONS = Math.max(1, Number(process.env.MAX_STREAMABLE_SESSIONS) || 500);
+  // Idle timeout, not a session lifetime. The sweep used to compare against
+  // createdAt, so a healthy client was dropped exactly one hour after connect no
+  // matter how actively it searched — each drop cost a fresh McpServer + transport
+  // handshake on a device that can barely afford one (the paired
+  // "evicting stale session" / "session initialized" lines in the logs).
+  const SESSION_IDLE_TTL_MS = Math.max(60000, Number(process.env.SESSION_IDLE_TTL_MS) || 3600000);
+  // Entries created by older code paths (and by tests) only carry createdAt.
+  const idleMs = (entry, now) => now - (entry.lastActivityAt || entry.createdAt || now);
+  const touchSession = (entry) => { entry.lastActivityAt = Date.now(); };
   const STREAMABLE_SWEEP_INTERVAL_MS = Math.max(100, Number(process.env.SWEEP_INTERVAL_MS) || 60000);
   const streamableSessions = new Map();
   setInterval(() => {
     const now = Date.now();
     for (const [sid, entry] of streamableSessions) {
-      if (now - entry.createdAt > SESSION_TTL_MS) {
+      if (idleMs(entry, now) > SESSION_IDLE_TTL_MS) {
         console.log(`[mcp-stream] evicting stale session: ${sid}`);
         streamableSessions.delete(sid);
         entry.transport.close().catch(() => {});
@@ -394,7 +451,9 @@ export function createApp(kernelOverride, browserPoolOverride) {
       const sessionId = req.headers['mcp-session-id'];
       let transport;
       if (sessionId && streamableSessions.has(sessionId)) {
-        transport = streamableSessions.get(sessionId).transport;
+        const entry = streamableSessions.get(sessionId);
+        touchSession(entry);
+        transport = entry.transport;
       } else if (!sessionId && req.method === 'POST' && isInitializeRequest(req.body)) {
         if (streamableSessions.size >= MAX_STREAMABLE_SESSIONS) {
           const oldest = streamableSessions.entries().next().value;
@@ -408,7 +467,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid) => {
             console.log(`[mcp-stream] session initialized: ${sid}`);
-            streamableSessions.set(sid, { transport, createdAt: Date.now() });
+            streamableSessions.set(sid, { transport, createdAt: Date.now(), lastActivityAt: Date.now() });
           }
         });
         transport.onclose = () => {
@@ -444,12 +503,12 @@ export function createApp(kernelOverride, browserPoolOverride) {
   // SSE transport for remote MCP clients (opencode uses SSE for "type": "remote")
   // Each SSE connection needs its own McpServer (SDK Protocol only supports one transport per instance)
   // plus a serialized send() to prevent SSE write interleaving under concurrency.
-  const MAX_SSE_TRANSPORTS = 500;
+  const MAX_SSE_TRANSPORTS = Math.max(1, Number(process.env.MAX_SSE_TRANSPORTS) || 500);
   const sseTransports = new Map();
   setInterval(() => {
     const now = Date.now();
     for (const [sid, entry] of sseTransports) {
-      if (now - entry.createdAt > SESSION_TTL_MS) {
+      if (idleMs(entry, now) > SESSION_IDLE_TTL_MS) {
         console.log(`[sse] evicting stale session: ${sid}`);
         sseTransports.delete(sid);
         entry.server.close().catch(() => {});
@@ -487,7 +546,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
       const server = createMcpServer(kernel, actualBrowserPool);
       await server.connect(transport);
 
-      sseTransports.set(transport.sessionId, { transport, server, createdAt: Date.now() });
+      sseTransports.set(transport.sessionId, { transport, server, createdAt: Date.now(), lastActivityAt: Date.now() });
 
       res.on('close', () => {
         sseTransports.delete(transport.sessionId);
@@ -507,6 +566,7 @@ export function createApp(kernelOverride, browserPoolOverride) {
     if (!entry) {
       return res.status(404).end('Session not found');
     }
+    touchSession(entry);
     try {
       await entry.transport.handlePostMessage(req, res, req.body);
     } catch (err) {

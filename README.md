@@ -252,6 +252,78 @@ See [.env.example](.env.example) for the full configuration reference.
 
 ---
 
+## Multi-client congestion control
+
+Every browser-backed engine shares one Chromium, so the real ceiling is
+`MAX_CONCURRENT_PAGES` page slots. When several clients search at the same time, the
+extra requests queue for a slot. The knobs below decide what queueing means, so one
+stuck engine can no longer hold the only slot of a small machine hostage — the old
+failure mode was a `page queue full after 60000ms` wall that only a restart cleared.
+
+| Client sees                                   | Code             | Meaning / next step                                                                                   |
+| --------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
+| `page queue full after 60000ms`               | `PAGE_BUSY`      | Waited `PAGE_QUEUE_TIMEOUT_MS` for a slot. Retry later, or raise `MAX_CONCURRENT_PAGES` / the timeout. |
+| `no page slot free within the remaining Nms budget` | `PAGE_BUSY` | The caller's own budget (engine deadline / tool timeout) is shorter than any useful queue wait, so it failed before joining the queue. |
+| `page queue is full (N waiting for M slots)`  | `PAGE_QUEUE_FULL`| The wait queue (`MAX_PAGE_QUEUE_WAITERS`) is saturated; fails fast instead of parking more requests.    |
+| `DuckDuckGo throttle queue is full`           | `DDG_THROTTLED`  | More than `DUCKDUCKGO_MAX_QUEUED` clients waiting behind the 2 s DuckDuckGo spacing.                   |
+| `ChatGPT browser session is busy (N waiting)` | `CHATGPT_BUSY`   | One shared logged-in tab; more than `CHATGPT_MAX_QUEUED` clients queued.                                |
+| `search cancelled before <engine>`            | `ABORTED`        | The client disconnected or the tool deadline fired; the page was released immediately.                  |
+
+What changed under load:
+
+- Cancellation is wired end to end: an MCP client disconnect / tool deadline and a
+  plain HTTP client hanging up both abort the engines, the queued page-slot wait and
+  the browser fetch (`/search`, `/fetch_page`, `/search_and_fetch`, `/research_problem`)
+  and the OpenAPI `/tools/*` twins of those four routes, instead of leaving a task
+  nobody reads holding a slot.
+- An engine timeout aborts that engine, so a slow source releases its slot right away.
+  The same deadline is published on the signal, and the page queue honours it: a wait is
+  capped by the smaller of `PAGE_QUEUE_TIMEOUT_MS` and the remaining budget. Without that,
+  on a `MAX_CONCURRENT_PAGES=1` host every engine with a short deadline was killed by its
+  own timer while it was still *queued*, which clients read as a bogus `ENGINE_TIMEOUT`
+  (engine outage) instead of congestion -- and the doomed waiter held queue capacity that
+  the next client needed, turning into `PAGE_QUEUE_FULL` for everyone else.
+- Page teardown is bounded by `PAGE_TEARDOWN_TIMEOUT_MS`, which caps how long
+  `storageState()` / `goto('about:blank')` / `page.close()` may hold a slot. A wedged
+  page — exactly what a cancelled or timed-out request tends to leave behind — used
+  to own the only slot of a 1-slot machine until restart; now the close finishes in
+  the background while the next client starts.
+- Pages parked open after a captcha/bot check (`keepPageOpen`) are capped by
+  `MAX_KEPT_PAGES`. They sit outside the slot accounting and, in launch mode, each one
+  owns a browser context, so several clients scraping bot-walled sites accumulated
+  several resident Chromium instances inside the `KEPT_PAGE_TTL_MS` (5 min) window;
+  over the cap, throwaway parks go first, then oldest first.
+- Each shutdown step (chrome-devtools MCP / browser pool / HTTP server) is bounded by
+  `SHUTDOWN_STEP_TIMEOUT_MS`. A wedged `page.close()` or an SSE client that never
+  disconnects used to stop `pool.close()`/`server.close()` from ever returning, which
+  left the process, and all of Chromium, resident.
+- The anti-bot "linger" before closing a page is skipped while others are queued
+  (`BROWSER_KEEP_LINGER_UNDER_LOAD=true` restores it), as are optional human-like waits.
+- Session contexts are evicted LRU and never from under a running task, so
+  `MAX_SESSION_CONTEXTS=1` is safe with concurrent clients.
+- Idle `/mcp-stream` and `/sse` sessions are reclaimed after `SESSION_IDLE_TTL_MS`.
+
+Inspect live saturation with `engine_status` → `page_pool`
+(`active_pages` / `max_pages` / `queued_pages` / `max_queued_pages` / `session_contexts`
+/ `kept_pages`).
+
+Recommended floor for an ARM or 2 GB board:
+
+```ini
+LOW_POWER_DEVICE=true
+MAX_CONCURRENT_PAGES=1
+MAX_SESSION_CONTEXTS=1
+MAX_FETCH_CONCURRENCY=1
+PAGE_QUEUE_TIMEOUT_MS=30000
+MAX_PAGE_QUEUE_WAITERS=4
+MAX_KEPT_PAGES=2
+```
+
+For latency-critical calls keep `engines: ["duckduckgo", "wikipedia"]`: the HTTP
+engines never touch the browser pool, so they stay fast while browser engines queue.
+
+---
+
 ## Architecture
 
 ### User perspective

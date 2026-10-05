@@ -36,7 +36,8 @@ export async function searchBing(query, opts = {}) {
     proxyProfile,
     url: 'https://www.bing.com',
     sessionKey: 'bing',
-    reuseSession: true
+    reuseSession: true,
+    signal: opts.signal || null
   }, async (page) => {
     await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query)}&num=${limit}`, {
       waitUntil: 'networkidle',

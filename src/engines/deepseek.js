@@ -124,7 +124,8 @@ async function askDeepSeek(prompt, opts) {
     url: HOME_URL,
     sessionKey: 'deepseek',
     reuseSession: true,
-    closeDelayMs: [5000, 9000]
+    closeDelayMs: [5000, 9000],
+    signal: opts.signal || null
   }, async (page) => {
     await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: CONFIG.browserTimeoutMs || 45000 });
     try {

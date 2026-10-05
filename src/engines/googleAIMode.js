@@ -17,7 +17,8 @@ export async function searchGoogleAI(query, opts = {}) {
     sessionKey: 'google',
     reuseSession: true,
     closeDelayMs: [3000, 6000],
-    timeoutMs: 90000
+    timeoutMs: 90000,
+    signal: opts.signal || null
   }, async (page) => {
     await page.goto(AIMODE_URL, { waitUntil: 'domcontentloaded', timeout: CONFIG.browserTimeoutMs || 45000 });
     try {

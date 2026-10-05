@@ -2,8 +2,19 @@ import { getChromeDevtoolsMcpClient } from '../browser/chromeDevtoolsMcpClient.j
 import { getBrowserSession } from '../browser/sessionCatalog.js';
 import { CONFIG } from '../config/index.js';
 import { makeResult, SearchEngineError } from './base.js';
+import { ExclusiveQueue } from '../common/exclusiveQueue.js';
 
 const CHATGPT_SESSION = getBrowserSession('chatgpt');
+
+// How many clients may queue for the single ChatGPT tab before we start
+// refusing work. Kept small: a queued client already waits minutes behind a
+// slow turn, and the device cannot do better by holding more of them.
+const CHATGPT_MAX_QUEUED = Math.max(0, Number(process.env.CHATGPT_MAX_QUEUED) || 4);
+const chatGptTurnLock = new ExclusiveQueue({
+  name: 'ChatGPT browser session',
+  maxQueued: CHATGPT_MAX_QUEUED,
+  busyCode: 'CHATGPT_BUSY'
+});
 
 const CHAT_COMPOSER_PATTERNS = [
   /uid=([^\s]+)\s+textbox\s+"Chat with ChatGPT"/i,
@@ -350,7 +361,30 @@ async function waitForAssistantReply(client, baseline) {
     /* c8 ignore stop */
 }
 
-export async function searchChatGPT(query) {
+export async function searchChatGPT(query, opts = {}) {
+  // One Chrome-DevTools-MCP client and one selected ChatGPT tab are shared by
+  // every caller, so turns must never overlap: two concurrent searches would
+  // both fill the same composer and then each parse the other's reply as its
+  // own answer. This engine also sits outside MAX_CONCURRENT_PAGES, so the lock
+  // below is its only backpressure — bounded and cancellable on purpose.
+  const signal = opts.signal instanceof AbortSignal ? opts.signal : null;
+  let release;
+  try {
+    release = await chatGptTurnLock.acquire(signal);
+  } catch (err) {
+    throw new SearchEngineError(err.code || 'CHATGPT_BUSY', err.message, {
+      ...(err.details || {}),
+      retry_hint: 'ChatGPT searches run one at a time on the shared tab. Retry later, reduce parallel clients, or raise CHATGPT_MAX_QUEUED.'
+    });
+  }
+  try {
+    return await runChatGptTurn(query);
+  } finally {
+    release();
+  }
+}
+
+async function runChatGptTurn(query) {
   try {
     const client = getChromeDevtoolsMcpClient();
 
