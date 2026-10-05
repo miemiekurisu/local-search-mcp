@@ -91,7 +91,7 @@
 
 ### 浏览器后端来源
 
-对于无法通过简单 HTTP 请求可靠访问的来源，`local-search-mcp` 可使用持久的 Chromium 浏览器。根据配置，浏览器会话用于 **Bing**、**Google**、**ChatGPT Web** 和 **DeepSeek Web**。
+对于无法通过简单 HTTP 请求可靠访问的来源，`local-search-mcp` 可使用持久的 Chromium 浏览器。根据配置，浏览器会话用于 **DuckDuckGo**、**Bing**、**Google**、**ChatGPT Web** 和 **DeepSeek Web**。
 
 部分提供方要求用户通过可选的 noVNC 界面手动登录，登录态可持久化保存在本地。
 
@@ -161,13 +161,18 @@ opencode 的 `"type": "remote"` 模式使用 SSE，请用 `http://<服务器IP>:
     "local-search": {
       "type": "remote",
       "url": "http://<服务器IP>:8765/sse",
-      "timeout": 120
+      "timeout": 240
     }
   }
 }
 ```
 
-在低性能设备（如 ARM 开发板）上，浏览器搜索耗时更长——建议 `timeout` 设为 180–300，并考虑 `MAX_CONCURRENT_PAGES=1`。
+服务端自身对 `search_web` / `search_and_fetch` 各设了 240 秒上限
+（`SEARCH_TOOL_TIMEOUT_MS` / `BUNDLE_TOOL_TIMEOUT_MS`）：DeepSeek → Google AI → DeepSeek
+验证链在 ARM 板上实测约 135 秒，120 秒的闸门会把本来已经成功的整条链砍成 `TIMEOUT`。
+客户端超时请保持不低于该上限——客户端提前放弃会连带取消服务端任务并立刻释放页面槽位，
+已经跑完的工作全部作废。低性能设备（如 ARM 开发板）建议 `timeout` 设为 240–300，
+并考虑 `MAX_CONCURRENT_PAGES=1`。
 
 ---
 
@@ -190,14 +195,33 @@ opencode 的 `"type": "remote"` 模式使用 SSE，请用 `http://<服务器IP>:
 
 | 引擎        | 类型     | 需要登录 | 说明                              |
 | ----------- | -------- | -------- | ------------------------------- |
-| `duckduckgo`| HTTP     | 否       | 默认，无 Key，无需浏览器        |
+| `duckduckgo`| 浏览器   | 否       | 默认，无 Key，端点阶梯          |
 | `wikipedia` | HTTP     | 否       | 默认，无 Key，无需浏览器        |
 | `bing`      | 浏览器   | 否       | 浏览器渲染，公开搜索            |
 | `google`    | 浏览器   | 否       | 浏览器渲染，公开搜索            |
 | `chatgpt`   | 浏览器   | 是       | 需通过 noVNC 登录               |
 | `deepseek`  | 浏览器   | 是       | 需登录 `chat.deepseek.com`      |
 
-核心工作流（`duckduckgo`、`wikipedia`）无需 API Key。可配置可选的 API Key 回退（Brave、Tavily、Exa、Google Custom Search），仅在基于页面的引擎失败时使用。
+核心工作流（`duckduckgo`、`wikipedia`）无需 API Key，也无需登录。`duckduckgo` 同样驱动共享的
+Chromium：纯 HTTP 访问 DuckDuckGo 会被软封。可配置可选的 API Key 回退（Brave、Tavily、Exa、
+Google Custom Search），仅在基于页面的引擎失败时使用。
+
+### DuckDuckGo 端点阶梯
+
+`duckduckgo` 在同一个页面槽位内依次尝试三个 DuckDuckGo 端点，直到其中一个返回结果：
+
+| 顺序 | 端点 | 本机实测 | 为什么排在这里 |
+| ---- | ---- | -------- | ---------------- |
+| 1 | `duckduckgo.com/?q=` | 200，渲染后约 170 KB，直链 | 它 `robots.txt` 里唯一放行的 SERP：`Disallow: /lite`、`Disallow: /html` 位于 `Disallow: /*?` 之上，其后才是 `Allow: /?*`。结果由前端渲染。 |
+| 2 | `html.duckduckgo.com/html/` | 当前是 202 挑战页，约 30 KB | 静态且便宜，但被 `Disallow`，而且结果来自 Bing——`ddgs` 项目把该引擎标为 `provider="bing"`——所以基本和 `bing` 重复，也正是最先被拦的一跳。 |
+| 3 | `lite.duckduckgo.com/lite/` | 200，约 22 KB | 与上一跳同样受限，三者中页面最小。 |
+
+软封的形态是用 **HTTP 200 或 202** 返回一个 `anomaly-modal` 挑战页，因此状态码和响应体必须一起
+判定；否则挑战页会被解析成 0 条结果，客户端收到 `SERP_PARSE_FAILED`，看起来像选择器失效，而不是
+一个会自行恢复的限流。
+
+当有别的客户端正在排队等槽位时，顺序改为最省优先（`lite,html,main`）：单槽位机器上稀缺的资源是
+槽位本身，3.5 秒的静态页优于 9 秒的渲染并占用。`DUCKDUCKGO_ENDPOINTS` 可覆盖空闲时的顺序。
 
 ---
 
@@ -247,6 +271,8 @@ ssh -L 6082:127.0.0.1:6082 user@server
 | `NOVNC_PASSWORD`      | `""`    | noVNC 密码（为空则不启用 noVNC）    |
 | `LOW_POWER_DEVICE`    | `false` | 低性能设备降低并发                   |
 | `MEM_LIMIT`           | —       | 容器内存上限（如 `2g`）              |
+| `SEARCH_TOOL_TIMEOUT_MS` | `240000` | 服务端 `search_web` 上限，客户端超时要更大 |
+| `BUNDLE_TOOL_TIMEOUT_MS` | `240000` | 服务端 `search_and_fetch` 上限       |
 
 完整配置参考见 [.env.example](.env.example)。
 
@@ -265,6 +291,8 @@ ssh -L 6082:127.0.0.1:6082 user@server
 | `no page slot free within the remaining Nms budget` | `PAGE_BUSY`     | 调用方自身预算（引擎时限/工具超时）短到等不到槽位，未入队即快速失败。              |
 | `page queue is full (N waiting for M slots)`     | `PAGE_QUEUE_FULL` | 等待队列已达 `MAX_PAGE_QUEUE_WAITERS`，快速失败而不是继续堆积请求。              |
 | `DuckDuckGo throttle queue is full`              | `DDG_THROTTLED`   | 超过 `DUCKDUCKGO_MAX_QUEUED` 个客户端在等 DuckDuckGo 的 2 秒最小间隔。            |
+| `DuckDuckGo blocked in Chromium (… HTTP 202 …)`   | `ENGINE_BLOCKED`    | [端点阶梯](#duckduckgo-端点阶梯)三跳全部命中挑战页。它会自行恢复：给该引擎换一条 `engine_proxies` 出口，或从 `engines[]` 中移除。 |
+| `DuckDuckGo was not attempted: under 4000ms of budget left` | `ENGINE_TIMEOUT` | 剩余预算装不下一跳导航，于是没有占着槽位去做注定失败的尝试。调大 `ENGINE_TIMEOUT_MS`/工具超时，或让其他引擎先回答。 |
 | `ChatGPT browser session is busy (N waiting)`    | `CHATGPT_BUSY`    | 多个客户端共用一个登录标签页，排队数超过 `CHATGPT_MAX_QUEUED`。                   |
 | `search cancelled before <engine>`               | `ABORTED`         | 客户端断开或工具超时，页面已立即释放。                                            |
 
@@ -293,6 +321,8 @@ ssh -L 6082:127.0.0.1:6082 user@server
   曾让 `pool.close()`/`server.close()` 永不返回，进程退不出去就等于整份 Chromium 常驻。
 - 有人排队时跳过关页前的「拟人停留」（`BROWSER_KEEP_LINGER_UNDER_LOAD=true` 可恢复），
   同时跳过可选的拟人等待动作。
+- DuckDuckGo 在一个槽位内走端点阶梯，而不是只信单个 URL；它也不会启动一跳注定跑不完的导航：
+  宁可上报 `ENGINE_TIMEOUT`，也不先占住槽位、再报告一个并非自己造成的解析失败。
 - 会话 context 按 LRU 驱逐，且绝不驱逐正在执行任务的 context，
   因此并发客户端下 `MAX_SESSION_CONTEXTS=1` 也是安全的。
 - 空闲的 `/mcp-stream`、`/sse` 会话在 `SESSION_IDLE_TTL_MS` 后回收。
@@ -313,8 +343,9 @@ MAX_PAGE_QUEUE_WAITERS=4
 MAX_KEPT_PAGES=2
 ```
 
-对延迟敏感的调用建议固定 `engines: ["duckduckgo", "wikipedia"]`：
-HTTP 引擎完全不占用浏览器池，浏览器引擎排队时它们依然可用。
+对延迟敏感的调用建议固定 `engines: ["wikipedia"]`（配置了 Key 时再加 Brave/Tavily）：
+`wikipedia` 是唯一不碰浏览器池的默认引擎，浏览器引擎排队时它依然快。`duckduckgo` 现在与
+bing/google 共用同一个页面池，在单槽位机器上它是排队者，而不是旁路。
 
 ---
 
@@ -328,8 +359,8 @@ Agent
  MCP
   ▼
 local-search-mcp
-  ├── HTTP 来源（duckduckgo、wikipedia）
-  ├── Chromium 来源（bing、google、chatgpt、deepseek）
+  ├── HTTP 来源（wikipedia）
+  ├── Chromium 来源（duckduckgo、bing、google、chatgpt、deepseek）
   ├── 页面抓取（HTTP + 浏览器回退）
   └── 多查询研究
 ```

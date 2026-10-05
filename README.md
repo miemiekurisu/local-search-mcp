@@ -91,7 +91,7 @@ This project grew out of that workflow.
 
 ### Browser-backed sources
 
-For sources that cannot be reached reliably through simple HTTP requests, `local-search-mcp` can use a persistent Chromium browser. Depending on configuration, browser sessions are used for **Bing**, **Google**, **ChatGPT Web** and **DeepSeek Web**.
+For sources that cannot be reached reliably through simple HTTP requests, `local-search-mcp` can use a persistent Chromium browser. Depending on configuration, browser sessions are used for **DuckDuckGo**, **Bing**, **Google**, **ChatGPT Web** and **DeepSeek Web**.
 
 Some providers require the user to log in manually through the optional noVNC interface. Login state can then be persisted locally.
 
@@ -161,13 +161,19 @@ opencode's `"type": "remote"` mode uses SSE. Use `http://<server-ip>:8765/sse` a
     "local-search": {
       "type": "remote",
       "url": "http://<server-ip>:8765/sse",
-      "timeout": 120
+      "timeout": 240
     }
   }
 }
 ```
 
-On low-power devices (e.g. ARM boards), browser search can take longer — set `timeout` to 180–300 and consider `MAX_CONCURRENT_PAGES=1`.
+The server applies its own 240 s gate to `search_web` and `search_and_fetch`
+(`SEARCH_TOOL_TIMEOUT_MS` / `BUNDLE_TOOL_TIMEOUT_MS`): a DeepSeek → Google AI → DeepSeek
+verification chain measured ~135 s on an ARM board, and a 120 s gate cut that
+already-successful chain down to `TIMEOUT`. Keep the client timeout at or above that cap —
+a client that gives up early also cancels the run server-side and releases the page slot,
+so the work in flight is thrown away. On low-power devices (e.g. ARM boards) set `timeout`
+to 240–300 and consider `MAX_CONCURRENT_PAGES=1`.
 
 ---
 
@@ -269,6 +275,8 @@ Copy `.env.example` to `.env` and adjust as needed. The most common options:
 | `NOVNC_PASSWORD`       | `""`    | noVNC password (empty = noVNC disabled)|
 | `LOW_POWER_DEVICE`     | `false` | Reduce concurrency for low-power hosts |
 | `MEM_LIMIT`            | —       | Container memory cap (e.g. `2g`)       |
+| `SEARCH_TOOL_TIMEOUT_MS` | `240000` | Server-side cap for `search_web`; keep the client timeout above it |
+| `BUNDLE_TOOL_TIMEOUT_MS` | `240000` | Server-side cap for `search_and_fetch` |
 
 See [.env.example](.env.example) for the full configuration reference.
 
