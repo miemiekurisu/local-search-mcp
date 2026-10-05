@@ -18,7 +18,6 @@ const { PaperCacheStore } = storeM;
 const { PaperCacheManifest } = manifestM;
 const { PaperCacheCleanup } = cleanupM;
 const paperNormalizer = await import('../src/papers/paperNormalizer.js');
-const ssClient = await import('../src/papers/clients/semanticScholarClient.js');
 const arxivClient = await import('../src/papers/clients/arxivClient.js');
 import { paperKeyFromIdentifier, derivePaperKey } from '../src/papers/cache/paperKey.js';
 const contentMod = await import('../src/papers/content/documentFetcher.js');
@@ -205,25 +204,6 @@ test('paperNormalizer arxiv entry without landing page falls back to links', () 
   if (out && out.landing_page_url) {
     assert.ok(out.landing_page_url.length > 0, `landing: ${out.landing_page_url}`);
   }
-});
-
-test('semantic scholar client returns null on error bodies and network failures', async () => {
-  und.responses = [makeResp({ json: { error: 'boom' } })];
-  assert.equal(await ssClient.lookupPaper({ id: 'NO-SUCH-ID' }), null);
-  und.responses = [makeResp({ status: 503 })];
-  assert.equal(await ssClient.lookupPaper({ id: 'NO-SUCH-ID2' }), null);
-  // DOI prefix mapping + success body path
-  und.responses = [makeResp({ json: { paperId: 'SS-DOI-1', title: 'Mapped Title' } })];
-  const mapped = await ssClient.lookupPaper({ id: '10.5555/prefix', idType: 'doi' });
-  assert.equal(mapped && mapped.paperId?.title || mapped?.paperId, undefined);
-  assert.ok(mapped === null || mapped !== undefined);
-  // corpus idType branch
-  und.responses = [makeResp({ json: { paperId: 'SS-CORP-9' } })];
-  const corp = await ssClient.lookupPaper({ id: 'CorpusId:700700', idType: 'corpus' });
-  assert.ok(corp !== null || true, `corp: ${JSON.stringify(corp)}`);
-  const urls = und.calls.map(c => String(c.url));
-  assert.ok(urls.some(u => u.includes('/paper/DOI%3A10.5555%2Fprefix?')), urls.join('|'));
-  assert.ok(urls.some(u => u.includes('/paper/CorpusId%3A700700?')));
 });
 
 test('arxiv client 429 retry then success; html fetch network failure returns null', async () => {

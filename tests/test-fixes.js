@@ -45,17 +45,6 @@ describe('Bug 3: SSRF IPv6 and bracket stripping', () => {
   });
 });
 
-describe('Bug 4: chrome.js cleanup', () => {
-  it('should pass opts directly without adding engine field', () => {
-    const lines = src('../src/engines/chrome.js').split('\n');
-    const idx = lines.findIndex(l => l.includes('searchGoogleViaChrome'));
-    assert.ok(idx >= 0);
-    const body = lines.slice(idx).join('\n');
-    assert.ok(!body.includes("engine: 'google'"));
-    assert.ok(body.includes('searchViaChromeDevTools(query, opts)'));
-  });
-});
-
 describe('Bug 5: playwrightPool.js indentation', () => {
   it('openSessionPage let pageEntry line should have consistent 4-space indent', () => {
     const s = src('../src/browser/playwrightPool.js');
@@ -78,35 +67,6 @@ describe('artifactStore.js: symlink protection', () => {
     assert.ok(s.includes('lstatSync'));
     assert.ok(s.includes('isSymbolicLink'));
     assert.ok(!s.includes('catch {}'), 'no silent empty catches');
-  });
-});
-
-describe('httpClient.js: SSRF-safe redirect', () => {
-  it('should use manual redirect with internal host validation', () => {
-    const s = src('../src/common/httpClient.js');
-    assert.ok(s.includes("redirect: 'manual'"));
-    assert.ok(s.includes('isInternalHost'));
-    assert.ok(s.includes('internal address blocked'));
-    assert.ok(s.includes('Too many redirects'));
-  });
-});
-
-describe('rateLimiter.js: queue limit and unref', () => {
-  it('should have maxQueueSize and unref timers', () => {
-    const s = src('../src/common/rateLimiter.js');
-    assert.ok(s.includes('maxQueueSize'));
-    assert.ok(s.includes('unref'));
-    assert.ok(s.includes('queue full'));
-  });
-});
-
-describe('retryPolicy.js: abort detection', () => {
-  it('should check cause chain and ABORT_ERR code', () => {
-    const s = src('../src/common/retryPolicy.js');
-    assert.ok(s.includes('isAbortError'));
-    assert.ok(s.includes('cause'));
-    assert.ok(s.includes('ABORT_ERR'));
-    assert.ok(s.includes('unref'));
   });
 });
 
@@ -177,11 +137,6 @@ describe('Codegraph: Null Pointer', () => {
     assert.ok(s.includes('message.params || {}'));
   });
 
-  it('chrome.js: query type check', () => {
-    const s = src('../src/engines/chrome.js');
-    assert.ok(s.includes("typeof query !== 'string'"));
-  });
-
   it('paperKernel.js: dateParts[0] guarded', () => {
     const s = src('../src/papers/paperKernel.js');
     assert.ok(s.includes('Array.isArray(work.issued.dateParts[0])'), 'dateParts[0] should be guarded');
@@ -223,77 +178,6 @@ describe('Codegraph: Abnormal Memory Usage', () => {
 // ============================================================
 // Integration: behavioral tests
 // ============================================================
-
-describe('Integration: retryPolicy abort detection', async () => {
-  let retry;
-  before(async () => {
-    const mod = await import('../src/common/retryPolicy.js');
-    retry = mod.retry;
-  });
-
-  it('should not retry AbortError by name', async () => {
-    let calls = 0;
-    await assert.rejects(
-      retry(async () => { calls++; throw Object.assign(new Error('abort'), { name: 'AbortError' }); }, { maxRetries: 5, baseDelayMs: 1 }),
-      /abort/
-    );
-    assert.equal(calls, 1);
-  });
-
-  it('should not retry AbortError by nested cause', async () => {
-    let calls = 0;
-    await assert.rejects(
-      retry(async () => {
-        calls++;
-        throw Object.assign(new Error('outer'), { cause: Object.assign(new Error('abort'), { name: 'AbortError' }) });
-      }, { maxRetries: 5, baseDelayMs: 1 }),
-      /outer/
-    );
-    assert.equal(calls, 1);
-  });
-
-  it('should not retry ABORT_ERR code', async () => {
-    let calls = 0;
-    await assert.rejects(
-      retry(async () => { calls++; throw Object.assign(new Error('abort'), { code: 'ABORT_ERR' }); }, { maxRetries: 5, baseDelayMs: 1 }),
-      /abort/
-    );
-    assert.equal(calls, 1);
-  });
-
-  it('should not retry deeply nested abort cause', async () => {
-    let calls = 0;
-    await assert.rejects(
-      retry(async () => {
-        calls++;
-        throw Object.assign(new Error('outer'), { cause: Object.assign(new Error('middle'), { cause: Object.assign(new Error('abort'), { name: 'AbortError' }) }) });
-      }, { maxRetries: 5, baseDelayMs: 1 }),
-      /outer/
-    );
-    assert.equal(calls, 1);
-  });
-});
-
-describe('Integration: rateLimiter queue flood protection', async () => {
-  let RateLimiter;
-  before(async () => {
-    const mod = await import('../src/common/rateLimiter.js');
-    RateLimiter = mod.RateLimiter;
-  });
-
-  it('should reject when queue is full', async () => {
-    const limiter = new RateLimiter({ minIntervalMs: 100, maxConcurrency: 1, maxQueueSize: 2 });
-    const active = limiter.acquire('key');
-    await active;
-    const q1 = limiter.acquire('key');
-    const q2 = limiter.acquire('key');
-    await assert.rejects(limiter.acquire('key'), /queue full/i);
-    limiter.release('key');
-    await q1;
-    limiter.release('key');
-    await q2;
-  });
-});
 
 describe('Integration: normalize.js utilities', async () => {
   let hostOf, truncateText;

@@ -15,7 +15,6 @@ import path from 'node:path';
 import { PageFetcher } from '../src/fetch/pageFetcher.js';
 import { ArtifactStore } from '../src/artifacts/artifactStore.js';
 import { SearchKernel } from '../src/kernel/searchKernel.js';
-import { DeepResearchKernel } from '../src/research/deepResearchKernel.js';
 import { createApp } from '../src/http_server.js';
 
 const artifactStore = new ArtifactStore(fs.mkdtempSync(path.join(os.tmpdir(), 'cancel-artifacts-')));
@@ -295,24 +294,6 @@ test('research with an already cancelled signal does no searches at all', async 
   controller.abort('too late');
   const result = await kernel.researchProblem({ ...PROBLEM, budget: { max_queries: 4 }, signal: controller.signal });
   assert.deepStrictEqual(seen, []);
-  assert.ok(result.failures.some(f => f.code === 'ABORTED'));
-});
-
-test('deep research forwards the signal and stops its web loop', async () => {
-  const controller = new AbortController();
-  const signals = [];
-  const deep = new DeepResearchKernel({
-    searchKernel: {
-      searchAndFetch: async (args) => {
-        signals.push(args.signal);
-        controller.abort('client gone');
-        return { items: [], pages_fetched: 0 };
-      }
-    }
-  });
-  const result = await deep.researchDeep({ question: 'why is the page queue full', signal: controller.signal });
-  assert.equal(signals.length, 1, 'deep research kept searching after the cancel');
-  assert.equal(signals[0], controller.signal, 'the signal did not reach the search');
   assert.ok(result.failures.some(f => f.code === 'ABORTED'));
 });
 

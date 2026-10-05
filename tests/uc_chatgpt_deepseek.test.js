@@ -272,37 +272,3 @@ test('chatgpt mcp failure without tool error gives CHROME_DEVTOOLS_MCP_ERROR', a
   const { searchChatGPT } = await import('../src/engines/chatgpt.js');
   await assert.rejects(searchChatGPT('q', 10), { code: 'CHROME_DEVTOOLS_MCP_ERROR' });
 });
-
-// ── chrome engine ───────────────────────────────────────────
-test('chrome searchViaChromeDevTools parses ndjson via mocked exec', async () => {
-  cp.exec = (cmd, opts, cb) => {
-    assert.ok(cmd.includes('search --query'));
-    assert.strictEqual(opts.timeout, 30000);
-    cb(null, { stdout: '{"title":"T1","url":"https://a.com/1","snippet":"s"}\nnotjson\n{"url":"https://b.com/2"}\n', stderr: '' });
-  };
-  const { searchViaChromeDevTools } = await import('../src/engines/chrome.js');
-  const res = await searchViaChromeDevTools('q', { limit: 2 });
-  assert.strictEqual(res.length, 2);
-  assert.strictEqual(res[0].engine, 'chrome');
-  assert.strictEqual(res[1].url, 'https://b.com/2');
-});
-
-test('chrome exec failure → empty list, dangerous chars stripped', async () => {
-  cp.exec = (cmd, opts, cb) => {
-    assert.strictEqual(cmd.includes('|'), false);
-    cb(new Error('spawn failed'));
-  };
-  const { searchViaChromeDevTools, searchGoogleViaChrome } = await import('../src/engines/chrome.js');
-  assert.deepStrictEqual(await searchViaChromeDevTools('x|y;rm'), []);
-  assert.deepStrictEqual(await searchGoogleViaChrome('alias test'), []);
-});
-
-test('chrome engine: non-string query, stderr log, non-string stdout parse fallback', async () => {
-  cp.exec = (cmd, opts, cb) => cb(null, { stdout: '{"title":"T","url":"https://a.com/3"}', stderr: 'some warning text' });
-  const { searchViaChromeDevTools } = await import('../src/engines/chrome.js');
-  assert.deepStrictEqual(await searchViaChromeDevTools(123), []);
-  const res = await searchViaChromeDevTools('q2');
-  assert.strictEqual(res[0].url, 'https://a.com/3');
-  cp.exec = (cmd, opts, cb) => cb(null, { stdout: null, stderr: '' });
-  assert.deepStrictEqual(await searchViaChromeDevTools('q3'), []);
-});

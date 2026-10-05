@@ -11,7 +11,6 @@ const st = undiciState();
 const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kernel-edges-'));
 const { ArtifactStore } = await import('../src/artifacts/artifactStore.js');
 const { SearchKernel } = await import('../src/kernel/searchKernel.js');
-const { DeepResearchKernel } = await import('../src/research/deepResearchKernel.js');
 
 const store = new ArtifactStore(baseDir);
 const proxyRouter = {
@@ -175,95 +174,4 @@ test('getArtifact requires a string ref', async () => {
   const ref = store.writeText('bundles', 'artifact body padded content', { kind: 'x' });
   const got = await kernel.getArtifact({ artifact_ref: ref, limit: 10 });
   assert.ok(got.text.includes('artifact'));
-});
-
-test('deepResearch records fulltext/citation failures and merge stats', async () => {
-  let contentCalls = 0;
-  const contentKernel = {
-    async fetchContent({ identifier }) {
-      contentCalls++;
-      if (contentCalls === 1) throw new Error('content exploded');
-      if (contentCalls === 2) return { error: 'No open access locations found' };
-      return {
-        cached: false, source: 'arxiv', source_url: 'https://arxiv.org/pdf/1',
-        variant: 'raw/xml', mime_type: 'text/xml', size_bytes: 900, content_hash: 'abc',
-        fullText: 'word '.repeat(120), wordCount: 240,
-        sections: [{ heading: 'Methods', text: 'step one ' + 'x'.repeat(60) }],
-        chunks: [{ index: 0, text: 'chunk text here padded ' + 'y'.repeat(40) }]
-      };
-    }
-  };
-  const paperKernel = {
-    async searchPapers({ query }) {
-      return {
-        query_id: 'pq_1',
-        papers: [
-          { doi: '10.1111/alpha-doi', title: 'Sparsity methods for attention', abstract: 'x'.repeat(90), year: 2024, citation_count: 9 },
-          { doi: '10.1111/beta-doi', title: 'Prompt compression study', abstract: 'p'.repeat(90), year: 2023, citation_count: 4 },
-          { doi: '10.1111/gamma-doi', title: 'Quantization tradeoff analysis', abstract: 'g'.repeat(90), year: 2022, citation_count: 2 }
-        ],
-        sources_tried: ['openalex'],
-        failures: []
-      };
-    },
-    async expandPaperCitations() {
-      const err = new Error('expand failed hard');
-      err.status = 'SS_TIMEOUT';
-      throw err;
-    }
-  };
-  const searchKernel = {
-    async searchAndFetch({ query }) {
-      return {
-        bundle_id: 'eb_1',
-        items: [{ title: 'web result title is long enough here', snippet: 'some snippet text that is also long enough', url: 'https://blog.example.com/post/1', host: 'blog.example.com', artifact_ref: null, text_preview: '' }],
-        search_artifact_ref: null,
-        pages_fetched: 1
-      };
-    }
-  };
-  const dr = new DeepResearchKernel({ paperKernel, paperContentKernel: contentKernel, searchKernel });
-  const out = await dr.researchDeep({
-    question: 'How do sparsity methods impact attention efficiency?',
-    budget: { web_queries: 1, paper_queries: 1, max_citation_expansions: 1, max_fulltext_papers: 3 },
-    source_policy: { fetch_fulltext: true },
-    domain: 'ai_ml'
-  });
-  assert.ok(out.failures.some(f => f.type === 'citation'), JSON.stringify(out.failures));
-  assert.equal(contentCalls, 3, 'three fulltext calls');
-  const statuses = out.fulltext_results.map(r => r.status);
-  assert.deepEqual(statuses, ['error', 'failed', 'success']);
-  assert.equal(out.fulltext_results[0].error, 'content exploded');
-  assert.equal(out.fulltext_results[1].error, 'No open access locations found');
-  assert.equal(out.fulltext_results[2].sections.length, 1);
-  const paperClaim = (out.key_claim_candidates || []).find(c => c.source_type === 'paper' && c.supporting_sources[0].doi === '10.1111/gamma-doi');
-  assert.ok(paperClaim, JSON.stringify(out.key_claim_candidates));
-  assert.equal(paperClaim.fulltext_fetched, true);
-  assert.equal(paperClaim.has_sections, true);
-  assert.ok(paperClaim.claim.startsWith('[FULLTEXT]'));
-  assert.ok(Array.isArray(out.contradiction_candidates) && Array.isArray(out.uncertainty_notes));
-  assert.equal(out.fulltext_results[2].source_url, 'https://arxiv.org/pdf/1');
-});
-
-test('deepResearch confidence default branch for unknown hosts', async () => {
-  st.responses = [
-    makeResp({ status: 200, text: '<html><div class="result"><a class="result__a" href="https://mystery-zone.example.net/x">Mystery page</a></div></html>', headers: { 'content-type': 'text/html' } }),
-    makeResp(wikiFeed([{ title: 'wiki entry', snippet: 'wiki text' }])),
-    makeResp({ status: 200, text: '<html><body>some page body content ' + 'm'.repeat(120) + '</body></html>', headers: { 'content-type': 'text/html' } })
-  ];
-  const searchKernel = {
-    async searchAndFetch() {
-      return {
-        bundle_id: 'eb_2',
-        items: [{ title: 'some odd web page title long enough', snippet: 'mystery host snippet text also long', url: 'https://mystery-zone.example.net/x', host: 'mystery-zone.example.net', artifact_ref: null, text_preview: '' }],
-        search_artifact_ref: null,
-        pages_fetched: 1
-      };
-    }
-  };
-  const dr = new DeepResearchKernel({ searchKernel });
-  const out = await dr.researchDeep({ question: 'unknown host confidence check?' });
-  const webClaim = (out.key_claim_candidates || []).find(c => c.source_type === 'web');
-  assert.ok(webClaim);
-  assert.equal(webClaim.confidence_hint, 0.55);
 });

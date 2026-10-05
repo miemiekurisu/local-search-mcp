@@ -284,10 +284,9 @@ function identifierForSource(value, type) {
 }
 
 export class PaperKernel {
-  constructor({ sourceRegistry, artifactStore, rateLimiter } = {}) {
+  constructor({ sourceRegistry, artifactStore } = {}) {
     this.sourceRegistry = sourceRegistry || null;
     this.artifactStore = artifactStore || null;
-    this.rateLimiter = rateLimiter || null;
     this.router = new PaperRouter(sourceRegistry || { isSourceEnabled: isSourceEnabled, getEnabledSources: () => [] });
     this._config = getConfig();
   }
