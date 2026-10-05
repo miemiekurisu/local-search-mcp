@@ -25,7 +25,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
         'This server provides 8 tools for web search, weather, time, and evidence gathering.',
         '',
         'Quick start:',
-        '  - Use search_web to search DuckDuckGo + Wikipedia via HTTP (no login, no browser needed).',
+        '  - Use search_web to search DuckDuckGo + Wikipedia (no login, no key). DuckDuckGo runs in the shared Chromium through an endpoint ladder; Wikipedia is plain HTTP.',
         '  - To use Google, Bing, ChatGPT, or DeepSeek, add them to engines[] explicitly.',
         '  - Browser-dependent engines require prior login via the noVNC browser.',
         '  - The browser is automatically closed after each query. It only stays open when CAPTCHA/manual intervention is needed.',
@@ -128,7 +128,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     inputSchema: {
       query: z.string().min(1).describe('Search query'),
       limit: z.number().int().min(1).max(20).optional().describe('Max results (default: 10, max: 20)'),
-      engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (HTTP, no login). Add "google", "bing", "chatgpt", or "deepseek" explicitly if logged in.'),
+      engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (no login, no key). Add "google", "bing", "chatgpt", or "deepseek" explicitly if logged in.'),
       fetch_top_k: z.number().int().min(0).max(20).optional().describe('Number of top results to auto-fetch full text (0 = skip fetching). Default 0. Use search_and_fetch for fetching with results.'),
       fetch_mode: z.enum(['auto', 'http', 'browser']).optional().describe('Fetch mode for full text extraction when fetch_top_k > 0. auto=try HTTP then browser fallback.'),
       proxy_profile: z.string().optional().describe('Proxy profile name (default: "auto")')
@@ -163,7 +163,7 @@ export function createMcpServer(kernel, browserPool, { paperKernel, paperContent
     inputSchema: {
       query: z.string().min(1).describe('Search query'),
       limit: z.number().int().min(1).max(20).optional().describe('Max search results per engine'),
-      engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (HTTP, no login). Add "google", "bing", "chatgpt", or "deepseek" explicitly if logged in.'),
+      engines: z.array(z.string()).optional().describe('Engines: default uses DuckDuckGo + Wikipedia (no login, no key). Add "google", "bing", "chatgpt", or "deepseek" explicitly if logged in.'),
       fetch_top_k: z.number().int().min(1).max(20).optional().describe('Number of result pages to fetch'),
       max_chars_total: z.number().int().min(2000).max(200000).optional().describe('Total max chars across all fetched pages'),
       proxy_profile: z.string().optional().describe('Proxy profile name')

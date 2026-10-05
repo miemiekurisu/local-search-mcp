@@ -190,14 +190,36 @@ On low-power devices (e.g. ARM boards), browser search can take longer — set `
 
 | Engine        | Type     | Login        | Notes                              |
 | ------------- | -------- | ------------ | ---------------------------------- |
-| `duckduckgo`  | HTTP     | no           | Default, no key, no browser        |
+| `duckduckgo`  | Browser  | no           | Default, no key, endpoint ladder   |
 | `wikipedia`   | HTTP     | no           | Default, no key, no browser        |
 | `bing`        | Browser  | no           | Browser-rendered, public search    |
 | `google`      | Browser  | no           | Browser-rendered, public search    |
 | `chatgpt`     | Browser  | yes          | Requires login via noVNC           |
 | `deepseek`    | Browser  | yes          | Requires `chat.deepseek.com` login |
 
-The core workflow (`duckduckgo`, `wikipedia`) needs no API key. Optional API-key fallbacks (Brave, Tavily, Exa, Google Custom Search) can be configured; they are used only when a page-based engine fails.
+The core workflow (`duckduckgo`, `wikipedia`) needs no API key and no login. `duckduckgo`
+does drive the shared Chromium: plain HTTP against DuckDuckGo gets soft-blocked. Optional
+API-key fallbacks (Brave, Tavily, Exa, Google Custom Search) can be configured; they are
+used only when a page-based engine fails.
+
+### DuckDuckGo endpoint ladder
+
+`duckduckgo` walks three DuckDuckGo endpoints inside one page slot until one answers:
+
+| Order | Endpoint | Measured here | Why it sits here |
+| ----- | -------- | ------------- | ---------------- |
+| 1 | `duckduckgo.com/?q=` | 200, ~170 KB rendered, direct links | The only SERP its `robots.txt` sanctions: `Disallow: /lite` and `Disallow: /html` sit above `Disallow: /*?`, then `Allow: /?*`. Renders results client-side. |
+| 2 | `html.duckduckgo.com/html/` | 202 challenge today, ~30 KB | Static and cheap, but `Disallow`ed and Bing-backed - the `ddgs` project labels that engine `provider="bing"` - so it mostly duplicates `bing`, and it is the hop that blocks first. |
+| 3 | `lite.duckduckgo.com/lite/` | 200, ~22 KB | Same caveats, smallest page of the three. |
+
+A soft block answers **HTTP 200 or 202** with an `anomaly-modal` challenge page, so status
+*and* body are classified together. Otherwise the challenge parses to zero results and the
+client is told `SERP_PARSE_FAILED`, which reads like broken selectors rather than a rate
+limit that clears on its own.
+
+While another client is queued for a slot the order becomes cheapest-first
+(`lite,html,main`): on a one-slot board the scarce resource is the slot, so a 3.5 s static
+page beats a 9 s render-and-hold. `DUCKDUCKGO_ENDPOINTS` overrides the idle order.
 
 ---
 
@@ -266,6 +288,8 @@ failure mode was a `page queue full after 60000ms` wall that only a restart clea
 | `no page slot free within the remaining Nms budget` | `PAGE_BUSY` | The caller's own budget (engine deadline / tool timeout) is shorter than any useful queue wait, so it failed before joining the queue. |
 | `page queue is full (N waiting for M slots)`  | `PAGE_QUEUE_FULL`| The wait queue (`MAX_PAGE_QUEUE_WAITERS`) is saturated; fails fast instead of parking more requests.    |
 | `DuckDuckGo throttle queue is full`           | `DDG_THROTTLED`  | More than `DUCKDUCKGO_MAX_QUEUED` clients waiting behind the 2 s DuckDuckGo spacing.                   |
+| `DuckDuckGo blocked in Chromium (… HTTP 202 …)` | `ENGINE_BLOCKED` | Every hop of the [endpoint ladder](#duckduckgo-endpoint-ladder) hit a challenge page. It clears by itself: pin the engine to another `engine_proxies` profile, or drop it from `engines[]`. |
+| `DuckDuckGo was not attempted: under 4000ms of budget left` | `ENGINE_TIMEOUT` | The remaining budget could not fit a navigation, so no slot was occupied for a doomed attempt. Raise `ENGINE_TIMEOUT_MS` / the tool timeout, or let another engine answer. |
 | `ChatGPT browser session is busy (N waiting)` | `CHATGPT_BUSY`   | One shared logged-in tab; more than `CHATGPT_MAX_QUEUED` clients queued.                                |
 | `search cancelled before <engine>`            | `ABORTED`        | The client disconnected or the tool deadline fired; the page was released immediately.                  |
 
@@ -299,6 +323,10 @@ What changed under load:
   left the process, and all of Chromium, resident.
 - The anti-bot "linger" before closing a page is skipped while others are queued
   (`BROWSER_KEEP_LINGER_UNDER_LOAD=true` restores it), as are optional human-like waits.
+- DuckDuckGo walks an endpoint ladder inside one slot instead of trusting a single URL, and
+  it will not start a navigation that cannot finish inside the caller's remaining budget:
+  it reports `ENGINE_TIMEOUT` rather than holding the slot and then reporting a parse
+  failure it did not cause.
 - Session contexts are evicted LRU and never from under a running task, so
   `MAX_SESSION_CONTEXTS=1` is safe with concurrent clients.
 - Idle `/mcp-stream` and `/sse` sessions are reclaimed after `SESSION_IDLE_TTL_MS`.
@@ -319,8 +347,10 @@ MAX_PAGE_QUEUE_WAITERS=4
 MAX_KEPT_PAGES=2
 ```
 
-For latency-critical calls keep `engines: ["duckduckgo", "wikipedia"]`: the HTTP
-engines never touch the browser pool, so they stay fast while browser engines queue.
+For latency-critical calls use `engines: ["wikipedia"]` (plus Brave/Tavily if a key is
+configured): `wikipedia` is the only default engine that never touches the browser pool, so
+it stays fast while browser engines queue. `duckduckgo` shares the pool with bing/google
+now, so on a 1-slot board it is a queue participant rather than a bypass.
 
 ---
 
@@ -334,8 +364,8 @@ Agent
  MCP
   ▼
 local-search-mcp
-  ├── HTTP sources (duckduckgo, wikipedia)
-  ├── Chromium sources (bing, google, chatgpt, deepseek)
+  ├── HTTP sources (wikipedia)
+  ├── Chromium sources (duckduckgo, bing, google, chatgpt, deepseek)
   ├── page fetch (HTTP + browser fallback)
   └── multi-query research
 ```

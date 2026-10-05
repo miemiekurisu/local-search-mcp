@@ -1,4 +1,5 @@
 process.env.GOOGLE_MIN_INTERVAL_MS = '0';
+process.env.DUCKDUCKGO_MIN_INTERVAL_MS = '0';
 process.env.ENGINE_TIMEOUT_MS = '20000';
 
 import { test } from 'node:test';
@@ -75,7 +76,8 @@ test('duckduckgo happy parses redirect uddg + tracking strip + dedupe', async ()
   assert.strictEqual(results[0].url, 'https://aa.example.com/1');
   assert.strictEqual(results[0].snippet, 'snip one');
   assert.strictEqual(results[0].engine, 'duckduckgo');
-  assert.ok(lastPage.gotoLog[0].includes('https://html.duckduckgo.com/html/'));
+  assert.ok(lastPage.gotoLog[0].startsWith('https://duckduckgo.com/?q='), 'the sanctioned SERP is the first hop');
+  assert.ok(lastPage.gotoLog[1].includes('https://html.duckduckgo.com/html/'), 'a SERP without articles falls through to /html');
 });
 
 test('duckduckgo blocked + empty + no browserPool', async () => {

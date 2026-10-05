@@ -80,7 +80,18 @@ export function isLikelyBlockedText(text) {
     t.includes('making sure you\'re not a bot') ||
     t.includes('you are seeing this because') ||
     t.includes('please prove you are human') ||
-    t.includes('enable javascript');
+    t.includes('enable javascript') ||
+    // DuckDuckGo's own challenge page (measured live: HTTP 202, ~14 KB body) reads
+    // "Unfortunately, bots use DuckDuckGo too. Please complete the following
+    // challenge to confirm this search was made by a human. Select all squares
+    // containing a duck" and asks for an email tagged error-lite+. None of the
+    // generic markers above occur in it, so the block slipped through and surfaced
+    // as a bogus SERP_PARSE_FAILED - i.e. it looked like selector rot when it was a
+    // soft rate limit that another endpoint can answer.
+    t.includes('bots use duckduckgo too') ||
+    t.includes('select all squares') ||
+    t.includes('challenge to confirm') ||
+    t.includes('error-lite+');
 }
 
 export function uniqueByUrl(items, limit = 20) {
