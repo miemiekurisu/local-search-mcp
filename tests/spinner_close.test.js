@@ -1,4 +1,4 @@
-import { describe, it, before, after, mock } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright';

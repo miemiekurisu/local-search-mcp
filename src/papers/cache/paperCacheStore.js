@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { CONFIG, ensureDir } from '../../config/index.js';
 import { PaperCacheManifest } from './paperCacheManifest.js';
-import { paperKeyFromIdentifier, derivePaperKey } from './paperKey.js';
+import { derivePaperKey } from './paperKey.js';
 import { computeExpiresAt } from './paperCachePolicy.js';
 
 export class PaperCacheStore {

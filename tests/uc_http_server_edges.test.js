@@ -3,21 +3,19 @@ process.env.RATE_LIMIT_WINDOW_MS = '600000';
 process.env.TRUST_PROXY = '1';
 process.env.MCP_BEARER_TOKEN = 'secret-token';
 process.env.SWEEP_INTERVAL_MS = '150';
-process.env.ARTIFACT_DIR = new URL('./uc-server-edge-artifacts/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
-process.env.BROWSER_STATE_DIR = new URL('./uc-server-edge-state/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-for (const d of ['uc-server-edge-artifacts', 'uc-server-edge-state']) {
-  const p = path.join(path.dirname(fileURLToPath(import.meta.url)), d);
-  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-}
+const edgeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lsm-server-edge-'));
+process.env.ARTIFACT_DIR = path.join(edgeTmp, 'artifacts');
+process.env.BROWSER_STATE_DIR = path.join(edgeTmp, 'state');
 
 const { createApp } = await import('../src/http_server.js');
+test.after(() => fs.rmSync(edgeTmp, { recursive: true, force: true }));
 
 function makeKernel() {
   return {

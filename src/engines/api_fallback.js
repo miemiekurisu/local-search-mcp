@@ -1,6 +1,6 @@
 import { CONFIG } from '../config/index.js';
 import { fetchWithTimeout } from '../utils/http.js';
-import { makeResult, SearchEngineError } from './base.js';
+import { makeResult } from './base.js';
 
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;

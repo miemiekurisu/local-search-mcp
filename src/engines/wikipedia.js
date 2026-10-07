@@ -1,7 +1,6 @@
-import * as cheerio from 'cheerio';
 import { CONFIG } from '../config/index.js';
 import { fetchWithTimeout } from '../utils/http.js';
-import { canonicalUrl, normalizeWhitespace, stripTrackingUrl, uniqueByUrl, isLikelyBlockedText } from '../utils/normalize.js';
+import { normalizeWhitespace, uniqueByUrl } from '../utils/normalize.js';
 import { makeResult, SearchEngineError } from './base.js';
 
 const WIKIPEDIA_API = 'https://en.wikipedia.org/w/api.php';
@@ -23,7 +22,6 @@ export async function searchWikipedia(query, opts = {}) {
     }));
     return uniqueByUrl(results, limit);
   } catch (err) {
-    // Always throw — the browserPool check was meaningless since this function doesn't use it
     if (err instanceof SearchEngineError) throw err;
     throw new SearchEngineError('SEARCH_FAILED', err.message);
   }

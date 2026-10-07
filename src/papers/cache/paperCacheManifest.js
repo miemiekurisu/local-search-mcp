@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { CONFIG, ensureDir, safeJoin } from '../../config/index.js';
+import { ensureDir } from '../../config/index.js';
 import { isExpired, computeExpiresAt } from './paperCachePolicy.js';
 
 // Serialize all manifest mutations (add/touch/delete) through one in-process

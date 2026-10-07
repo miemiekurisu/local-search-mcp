@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio';
 import { CONFIG } from '../config/index.js';
-import { canonicalUrl, normalizeWhitespace, stripTrackingUrl, uniqueByUrl } from '../utils/normalize.js';
+import { canonicalUrl, stripTrackingUrl, uniqueByUrl } from '../utils/normalize.js';
 import { makeResult, SearchEngineError } from './base.js';
 
 function parseBingHtml(html, limit) {

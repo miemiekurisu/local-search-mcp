@@ -2,7 +2,7 @@ import './helpers/mocks.mjs';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { undiciState, makeResp, jsonResponse } from './helpers/mocks.mjs';
+import { undiciState, makeResp } from './helpers/mocks.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

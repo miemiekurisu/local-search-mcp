@@ -5,7 +5,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { undiciState, dnsState, pdfParseState, makeResp, jsonResponse } from './helpers/mocks.mjs';
+import { undiciState, dnsState, pdfParseState, makeResp } from './helpers/mocks.mjs';
 
 const st = undiciState();
 dnsState();

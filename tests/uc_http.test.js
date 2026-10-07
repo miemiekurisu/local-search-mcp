@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { undiciState, dnsState, makeResp, sleep } from './helpers/mocks.mjs';
+import { undiciState, dnsState, makeResp } from './helpers/mocks.mjs';
 
 const st = undiciState();
 const dns = dnsState();

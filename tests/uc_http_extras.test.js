@@ -6,7 +6,7 @@ process.env.RATE_LIMIT_MAX_REQUESTS = '10000';
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { undiciState, jsonResponse, sleep } from './helpers/mocks.mjs';
+import { undiciState, sleep } from './helpers/mocks.mjs';
 
 const undici = undiciState();
 const { createApp } = await import('../src/http_server.js');
