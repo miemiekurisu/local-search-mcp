@@ -130,8 +130,11 @@ curl http://localhost:8765/health
 Expected:
 
 ```json
-{"ok":true}
+{"ok":true,"vnc":{"configured":false,"ok":true,"reason":"not_configured"}}
 ```
+
+With noVNC disabled there is nothing to probe, so `vnc` says so. With `NOVNC_PASSWORD` set
+the same field reports whether `x11vnc` and websockify are really listening.
 
 ---
 
@@ -275,6 +278,23 @@ docker logs <container> 2>&1 | grep -E 'x11vnc|noVNC proxy'
 docker exec <container> netstat -ltn | grep 5900
 ```
 
+Neither command is needed to notice it any more. With `NOVNC_PASSWORD` set, `/health` dials
+both ports itself and answers `503` as soon as either one stops listening, so `docker ps`
+shows `unhealthy` instead of lying:
+
+```bash
+curl -i http://localhost:8765/health
+# HTTP/1.1 503 Service Unavailable
+{"ok":false,"vnc":{"configured":true,"host":"127.0.0.1","rfb":{"port":5900,"open":false,"reason":"ECONNREFUSED"},"novnc":{"port":6080,"open":true}}}
+```
+
+The probe lives on the health endpoint only and never runs during a search. Both ports are
+dialled in parallel under `VNC_HEALTH_TIMEOUT_MS` (500 ms), and the answer is cached for
+`VNC_HEALTH_CACHE_MS` (1 s) and shared between concurrent callers, so a monitor polling
+`/health` cannot turn into a probe storm. `/health` is registered ahead of the rate limiter
+too, because a `429` there would read as a dead container. Set `VNC_HEALTH_CHECK=false` to
+report process liveness only.
+
 ---
 
 ## Configuration
@@ -286,6 +306,7 @@ Copy `.env.example` to `.env` and adjust as needed. The most common options:
 | `HTTP_LISTEN_PORT`     | `8765`  | Host port for the MCP server           |
 | `MCP_BEARER_TOKEN`     | `""`    | Bearer token auth (required if public) |
 | `NOVNC_PASSWORD`       | `""`    | noVNC password (empty = noVNC disabled)|
+| `VNC_HEALTH_CHECK`     | `true`  | `/health` also probes the VNC ports once noVNC is configured |
 | `LOW_POWER_DEVICE`     | `false` | Reduce concurrency for low-power hosts |
 | `MEM_LIMIT`            | —       | Container memory cap (e.g. `2g`)       |
 | `SEARCH_TOOL_TIMEOUT_MS` | `240000` | Server-side cap for `search_web`; keep the client timeout above it |
@@ -442,9 +463,9 @@ Built-in protections:
 
 - **SSRF guard** — blocks private/loopback/reserved addresses, numeric/hex/IPv4-mapped IP literals, DNS rebinding, non-http(s) schemes and redirects back to private networks.
 - **Path traversal guard** — artifact reads are confined to `/data/artifacts/`.
-- **Rate limiting** — default 100 requests per minute per IP (configurable).
+- **Rate limiting** — default 100 requests per minute per IP (configurable), on every route except `/health`.
 - **Bearer token auth** — enable with `MCP_BEARER_TOKEN`; all endpoints except `/health` require `Authorization: Bearer <token>`.
-- **Minimal health endpoint** — `/health` returns only `{"ok":true}`.
+- **Minimal health endpoint** — `/health` reports liveness only: `{"ok":true,"vnc":{...}}`, where `vnc` carries the two VNC ports and whether they answer. It sits outside Bearer auth and rate limiting on purpose, so a monitor cannot be fooled by a `401`/`429`; that also means anyone who can reach the endpoint can see whether VNC is up.
 
 If you must expose the service publicly, at minimum: set a strong `MCP_BEARER_TOKEN`, set `NOVNC_PASSWORD` and keep `NOVNC_LISTEN_HOST=127.0.0.1`, use HTTPS via a reverse proxy, and firewall the access IPs. This project is open-source software; the author accepts no liability for any consequences of its use.
 

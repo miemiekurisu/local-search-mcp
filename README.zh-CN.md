@@ -130,8 +130,11 @@ curl http://localhost:8765/health
 预期返回：
 
 ```json
-{"ok":true}
+{"ok":true,"vnc":{"configured":false,"ok":true,"reason":"not_configured"}}
 ```
+
+没启用 noVNC 时无从探测，`vnc` 会直接说明；设置了 `NOVNC_PASSWORD` 之后，同一个字段
+报告的就是 `x11vnc` 与 websockify 是否真的在监听。
 
 ---
 
@@ -269,6 +272,20 @@ docker logs <container> 2>&1 | grep -E 'x11vnc|noVNC proxy'
 docker exec <container> netstat -ltn | grep 5900
 ```
 
+现在不用手动查也能发现：设了 `NOVNC_PASSWORD` 之后 `/health` 会自己去连这两个端口，
+任一端口没监听就返回 `503`，`docker ps` 直接显示 `unhealthy`，不再谎报健康：
+
+```bash
+curl -i http://localhost:8765/health
+# HTTP/1.1 503 Service Unavailable
+{"ok":false,"vnc":{"configured":true,"host":"127.0.0.1","rfb":{"port":5900,"open":false,"reason":"ECONNREFUSED"},"novnc":{"port":6080,"open":true}}}
+```
+
+这个探测只在健康检查里跑，搜索路径一次都不会跑：两个端口并行连接、受
+`VNC_HEALTH_TIMEOUT_MS`（默认 500ms）约束，结果缓存 `VNC_HEALTH_CACHE_MS`（默认 1s）
+并在并发调用之间共享，所以监控轮询不会变成探测风暴。`/health` 也排在速率限制之前——
+那里冒出 `429` 会被当成容器已经死掉。只想报告进程存活就设 `VNC_HEALTH_CHECK=false`。
+
 ---
 
 ## 配置
@@ -280,6 +297,7 @@ docker exec <container> netstat -ltn | grep 5900
 | `HTTP_LISTEN_PORT`    | `8765`  | MCP 服务宿主端口                     |
 | `MCP_BEARER_TOKEN`    | `""`    | Bearer Token 认证（公网暴露时必须） |
 | `NOVNC_PASSWORD`      | `""`    | noVNC 密码（为空则不启用 noVNC）    |
+| `VNC_HEALTH_CHECK`  | `true`  | 启用 noVNC 后 `/health` 顺带探测 VNC 端口 |
 | `LOW_POWER_DEVICE`    | `false` | 低性能设备降低并发                   |
 | `MEM_LIMIT`           | —       | 容器内存上限（如 `2g`）              |
 | `SEARCH_TOOL_TIMEOUT_MS` | `240000` | 服务端 `search_web` 上限，客户端超时要更大 |
@@ -422,9 +440,9 @@ Docker
 
 - **SSRF 防护** — 拦截内网/回环/保留地址，数字/十六进制/IPv4-mapped IP 字面量、DNS 重绑定、非 http(s) scheme 以及重定向回内网。
 - **路径遍历防护** — artifact 读取限制在 `/data/artifacts/` 内。
-- **速率限制** — 默认每 IP 每分钟 100 次请求（可配置）。
+- **速率限制** — 默认每 IP 每分钟 100 次请求（可配置），`/health` 除外。
 - **Bearer Token 认证** — 通过 `MCP_BEARER_TOKEN` 启用；除 `/health` 外所有端点需携带 `Authorization: Bearer <token>`。
-- **最小化健康检查** — `/health` 仅返回 `{"ok":true}`。
+- **最小化健康检查** — `/health` 只报告存活：`{"ok":true,"vnc":{...}}`，其中 `vnc` 是两个 VNC 端口以及它们是否在监听。它有意放在 Bearer 认证与速率限制之外，监控方才不会被 `401`/`429` 误导；相应地，任何能访问该端点的人都能看到 VNC 是否在线。
 
 如果必须公网暴露，至少应：设置强 `MCP_BEARER_TOKEN`，设置 `NOVNC_PASSWORD` 并保持 `NOVNC_LISTEN_HOST=127.0.0.1`，通过反向代理启用 HTTPS，并用防火墙限制访问 IP。本项目为开源软件，作者不对使用造成的任何后果承担责任。
 

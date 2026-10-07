@@ -219,7 +219,9 @@ test('rate limit prune sweep and oversized map eviction', async () => {
   const agent = new http.Agent({ keepAlive: true, maxSockets: 64 });
   const spray = (ip) => new Promise((resolve, reject) => {
     const req = http.request({
-      host: '127.0.0.1', port, path: '/health', agent,
+      // /health is deliberately exempt from the limiter now, so the map is grown
+      // through a route that is not: one entry per forwarded ip.
+      host: '127.0.0.1', port, path: '/engine_status', agent,
       headers: { 'x-forwarded-for': ip }
     }, (res) => {
       res.resume();
@@ -245,7 +247,7 @@ test('rate limit prune sweep and oversized map eviction', async () => {
     }
     console.log('spray done');
     await sleep(400);
-    assert.equal(await spray('10.10.99.98'), undefined, 'post-eviction request still 200');
+    assert.equal(await spray('10.10.99.98'), undefined, 'post-eviction request still answered');
   } finally {
     agent.destroy();
     await close(server);

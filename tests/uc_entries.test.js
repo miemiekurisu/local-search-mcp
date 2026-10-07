@@ -101,7 +101,9 @@ test('mcp_server logs unhandled rejections without crashing', async () => {
 test('http_server binds PORT and serves /health', async () => {
   const port = 38000 + Math.floor(Math.random() * 2000);
   const child = spawn(process.execPath, ['src/http_server.js'], {
-    cwd: ROOT, env: childEnv(port), stdio: ['pipe', 'pipe', 'pipe']
+    // VNC liveness has its own tests; this server runs on a host where those
+    // ports are not supposed to exist, so the probe stays out of the way.
+    cwd: ROOT, env: { ...childEnv(port), VNC_HEALTH_CHECK: 'false' }, stdio: ['pipe', 'pipe', 'pipe']
   });
   const stdoutChunks = [];
   child.stdout.on('data', (c) => stdoutChunks.push(c));
@@ -115,6 +117,7 @@ test('http_server binds PORT and serves /health', async () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
+    assert.deepEqual(body.vnc, { configured: false, ok: true, reason: 'disabled' });
   } finally {
     child.kill();
     await new Promise(resolve => child.once('exit', resolve));

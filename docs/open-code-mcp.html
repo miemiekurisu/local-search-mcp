@@ -172,7 +172,7 @@ th { background: #f6f8fa; }
 <h3>OpenCode 看不到工具列表</h3>
 <ul>
   <li>确认 <code>docker compose ps</code> 显示容器正常运行</li>
-  <li>确认 <code>curl http://localhost:8765/health</code> 返回 <code>{"ok":true}</code></li>
+  <li>确认 <code>curl http://localhost:8765/health</code> 返回 <code>"ok":true</code>（启用 noVNC 时 <code>vnc</code> 里两个端口都应为 <code>open:true</code>）</li>
   <li>检查 OpenCode 配置文件中 <code>mcp</code> 段格式正确（JSON 语法错误）</li>
   <li>尝试将配置放在 <code>~/.config/opencode/opencode.json</code> 全局配置中而非项目配置</li>
 </ul>

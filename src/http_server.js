@@ -2,6 +2,7 @@ import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { CONFIG } from './config/index.js';
 import { createKernel } from './app.js';
+import { VncHealth } from './browser/vncHealth.js';
 import { gracefulClose } from './lifecycle.js';
 import { createMcpServer } from './mcp/server.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -79,10 +80,32 @@ export function createApp(kernelOverride, browserPoolOverride) {
   // Default 0 = do not trust X-Forwarded-For. Prevents spoofing the rate-limit
   // key via the header. Set TRUST_PROXY=N only behind N trusted reverse proxies.
   app.set('trust proxy', CONFIG.trustProxyHops);
+  // /health is the container healthcheck. It used to answer as soon as this process was
+  // alive, which is exactly when a dead x11vnc went unnoticed: the noVNC page is served by
+  // websockify and opens fine with nothing behind it. A VNC that is configured and not
+  // listening now reports ok:false with 503, so the container goes unhealthy instead of
+  // lying. VncHealth dials both ports in parallel, cached and time-bounded, because an
+  // endpoint this important must never stall behind a connect. It is registered above the
+  // rate limiter on purpose: a 429 here would read as a dead container to anything
+  // watching, and a check that performs no work gains nothing from being throttled.
+  const vncHealth = new VncHealth();
+  app.get('/health', async (req, res) => {
+    let vnc;
+    try {
+      vnc = await vncHealth.status();
+    } catch {
+      // A probe that could not run is not evidence that VNC is down.
+      vnc = { configured: true, ok: true, reason: 'probe_failed' };
+    }
+    const ok = Boolean(vnc.ok);
+    res.setHeader('x-local-search-ok', ok ? 'true' : 'false');
+    res.setHeader('cache-control', 'no-store');
+    res.status(ok ? 200 : 503).json({ ok, vnc });
+  });
+
   app.use(express.json({ limit: '2mb' }));
   app.use(rateLimiter);
 
-  app.get('/health', (req, res) => res.json({ ok: true }));
   app.use(authMiddleware);
 
   function redactBrowserSession(obj) {

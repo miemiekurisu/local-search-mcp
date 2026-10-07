@@ -63,6 +63,12 @@ services:
        - UNPAYWALL_EMAIL=${UNPAYWALL_EMAIL:-}
        - NOVNC_PASSWORD=${NOVNC_PASSWORD:-}
 
+       # VNC 健康检查：/health 会真的去连 x11vnc/websockify 的端口，配了
+       # NOVNC_PASSWORD 却没监听就返回 503（容器随之 unhealthy）。设 false 关闭。
+       - VNC_HEALTH_CHECK=${VNC_HEALTH_CHECK:-true}
+       - VNC_HEALTH_TIMEOUT_MS=${VNC_HEALTH_TIMEOUT_MS:-500}
+       - VNC_HEALTH_CACHE_MS=${VNC_HEALTH_CACHE_MS:-1000}
+
        # Security: Bearer token auth & rate limiting
        - MCP_BEARER_TOKEN=${MCP_BEARER_TOKEN:-}
        - RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS:-100}
@@ -104,3 +110,6 @@ services:
        interval: 30s
        timeout: 10s
        retries: 3
+       # x11vnc 只在 X display 就绪后才启动，慢机器上这可能要几十秒；
+       # start_period 内失败不计入 retries，避免启动期误判 unhealthy。
+       start_period: 60s

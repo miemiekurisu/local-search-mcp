@@ -237,12 +237,22 @@ describe('P0: http_server.js auth middleware', () => {
     assert.ok(healthIdx > 0 && authIdx > 0 && healthIdx < authIdx, '/health must be registered before authMiddleware');
   });
 
+  it('health endpoint should be before the rate limiter', () => {
+    const s = src('../src/http_server.js');
+    const healthIdx = s.indexOf("app.get('/health'");
+    const limiterIdx = s.indexOf('app.use(rateLimiter)');
+    assert.ok(healthIdx > 0 && limiterIdx > 0 && healthIdx < limiterIdx, '/health must be registered before rateLimiter');
+  });
+
   it('health endpoint should return minimal response', () => {
     const s = src('../src/http_server.js');
-    const healthLine = s.split('\n').find(l => l.includes('/health') && l.includes('res.json'));
-    assert.ok(healthLine, 'health route should exist');
-    assert.ok(!healthLine.includes('version'), 'health should NOT include version');
-    assert.ok(!healthLine.includes("'name'"), 'health should NOT include name');
+    const healthIdx = s.indexOf("app.get('/health'");
+    assert.ok(healthIdx > 0, 'health route should exist');
+    const end = s.indexOf('\n  app.use(', healthIdx);
+    const healthBlock = s.slice(healthIdx, end);
+    assert.ok(healthBlock.includes('vnc'), 'health should report the VNC half of noVNC');
+    assert.ok(!healthBlock.includes('version'), 'health should NOT include version');
+    assert.ok(!healthBlock.includes("'name'"), 'health should NOT include name');
   });
 });
 

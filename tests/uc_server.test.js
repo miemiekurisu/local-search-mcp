@@ -4,6 +4,9 @@ process.env.TRUST_PROXY = '1';
 process.env.MCP_BEARER_TOKEN = 'secret-token';
 process.env.ARTIFACT_DIR = new URL('./uc-server-artifacts/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 process.env.BROWSER_STATE_DIR = new URL('./uc-server-state/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+// /health reports the VNC half of noVNC, and this file asserts that nothing is
+// configured: an ambient password would make it dial ports that never exist here.
+delete process.env.NOVNC_PASSWORD;
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -54,28 +57,37 @@ function hdrs(extra = {}) {
   return { ...jsonHeaders, 'x-forwarded-for': `198.51.100.${xffCounter}`, ...extra };
 }
 
-test('health + rate limit + trust proxy separation', async () => {
-  const { stub, calls } = makeKernel();
+test('health is exempt from rate limiting, rate limit and trust proxy still separate', async () => {
+  const { stub } = makeKernel();
   const { app } = createApp(stub, {});
   const server = await start(app);
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
-    const r1 = await fetch(`${base}/health`, { headers: { 'x-forwarded-for': '198.51.100.7' } });
-    assert.equal(r1.status, 200);
-    assert.deepEqual(await r1.json(), { ok: true });
-    assert.equal(r1.headers.get('x-ratelimit-limit'), '2');
-    assert.equal(r1.headers.get('x-ratelimit-remaining'), '1');
+    // /health sits ahead of the limiter on purpose: a 429 there reads as a dead container.
+    // RATE_LIMIT_MAX_REQUESTS is 2 for this process, so three probes in a row would have
+    // been throttled if this route were still behind it.
+    for (let i = 0; i < 3; i += 1) {
+      const health = await fetch(`${base}/health`, { headers: { 'x-forwarded-for': '198.51.100.7' } });
+      assert.equal(health.status, 200);
+      assert.equal(health.headers.get('x-ratelimit-limit'), null);
+      assert.deepEqual(await health.json(), { ok: true, vnc: { configured: false, ok: true, reason: 'not_configured' } });
+    }
 
-    const r2 = await fetch(`${base}/health`, { headers: { 'x-forwarded-for': '198.51.100.7' } });
-    assert.equal(r2.headers.get('x-ratelimit-remaining'), '0');
-    const r3 = await fetch(`${base}/health`, { headers: { 'x-forwarded-for': '198.51.100.7' } });
-    assert.equal(r3.status, 429);
-    const b3 = await r3.json();
+    const e1 = await fetch(`${base}/engine_status`, { headers: { ...jsonHeaders, 'x-forwarded-for': '198.51.100.7' } });
+    assert.equal(e1.status, 200);
+    assert.equal(e1.headers.get('x-ratelimit-limit'), '2');
+    assert.equal(e1.headers.get('x-ratelimit-remaining'), '1');
+
+    const e2 = await fetch(`${base}/engine_status`, { headers: { ...jsonHeaders, 'x-forwarded-for': '198.51.100.7' } });
+    assert.equal(e2.headers.get('x-ratelimit-remaining'), '0');
+    const e3 = await fetch(`${base}/engine_status`, { headers: { ...jsonHeaders, 'x-forwarded-for': '198.51.100.7' } });
+    assert.equal(e3.status, 429);
+    const b3 = await e3.json();
     assert.equal(b3.error.code, 'RATE_LIMITED');
-    assert.ok(Number(r3.headers.get('retry-after')) >= 1);
+    assert.ok(Number(e3.headers.get('retry-after')) >= 1);
 
-    const r4 = await fetch(`${base}/health`, { headers: { 'x-forwarded-for': '198.51.100.8' } });
-    assert.equal(r4.status, 200, 'different forwarded ip has its own bucket');
+    const e4 = await fetch(`${base}/engine_status`, { headers: hdrs() });
+    assert.equal(e4.status, 200, 'different forwarded ip has its own bucket');
 
     const r5 = await fetch(`${base}/engine_status`, { headers: { authorization: 'Bearer wrong' } });
     assert.equal(r5.status, 401);

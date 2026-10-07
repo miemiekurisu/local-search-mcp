@@ -26,6 +26,13 @@ SUPERVISOR_CHECK_INTERVAL="${LOCAL_SEARCH_SUPERVISOR_CHECK_INTERVAL:-2}"
 
 export DISPLAY="${DISPLAY_NUMBER}"
 
+# The health check runs inside the node process and has to dial the same address websockify
+# dials, on the ports decided above. Without this it falls back to 5900/6080 and can call a
+# VNC healthy that is not the one actually running.
+export LOCAL_SEARCH_VNC_HEALTH_HOST="${VNC_TARGET}"
+export LOCAL_SEARCH_VNC_PORT="${VNC_PORT}"
+export LOCAL_SEARCH_NOVNC_PORT="${NOVNC_PORT}"
+
 APP_PID=""
 CHROMIUM_SUPERVISOR_PID=""
 SHUTTING_DOWN=0
