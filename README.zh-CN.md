@@ -258,6 +258,17 @@ ssh -L 6082:127.0.0.1:6082 user@server
 
 移除 `NOVNC_PASSWORD` 并重启容器即可关闭 noVNC。
 
+如果 `vnc.html` 能打开但桌面一直出不来（`Disconnected` / "Failed to connect to
+server"），说明网页这半是好的、VNC server 那半不是：页面由 websockify 提供，它再去连容器内
+的 5900。现在这两半都被守护着——容器会先等 X display 就绪再启动 `x11vnc`，`x11vnc` 或
+websockify 任一退出都会被重新拉起。以前的写法只在启动时各拉一次，所以只要有一次起早了
+（Xvfb 还没就绪）或者 Xvfb 自己重启过，noVNC 就会一直连不上，除非重建容器。宿主机上排查：
+
+```bash
+docker logs <container> 2>&1 | grep -E 'x11vnc|noVNC proxy'
+docker exec <container> netstat -ltn | grep 5900
+```
+
 ---
 
 ## 配置

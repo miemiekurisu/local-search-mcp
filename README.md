@@ -262,6 +262,19 @@ ssh -L 6082:127.0.0.1:6082 user@server
 
 Disable noVNC again by removing `NOVNC_PASSWORD` and restarting the container.
 
+If `vnc.html` loads but the desktop never appears (`Disconnected`, or "Failed to
+connect to server"), the web UI is fine and the VNC server is not: websockify serves
+the page and then dials port 5900 inside the container. Both halves are supervised now
+-- the container waits for the X display before starting `x11vnc`, and restarts
+`x11vnc` or websockify if either exits -- where before they were started once at boot,
+so one early failure (an Xvfb that had not finished starting, a restart of Xvfb itself)
+left noVNC unreachable until the container was recreated. To look at it from the host:
+
+```bash
+docker logs <container> 2>&1 | grep -E 'x11vnc|noVNC proxy'
+docker exec <container> netstat -ltn | grep 5900
+```
+
 ---
 
 ## Configuration

@@ -6,6 +6,12 @@ SCREEN_GEOMETRY="${LOCAL_SEARCH_SCREEN_GEOMETRY:-1920x1080x24}"
 VNC_PORT="${LOCAL_SEARCH_VNC_PORT:-5900}"
 NOVNC_PORT="${LOCAL_SEARCH_NOVNC_PORT:-6080}"
 VNC_LISTEN="${LOCAL_SEARCH_VNC_LISTEN:-0.0.0.0}"
+# 0.0.0.0 / :: are listen-only wildcards: they are not something you can dial, so
+# the websocket proxy connects to loopback in that (default) case.
+VNC_TARGET="${VNC_LISTEN}"
+if [[ "${VNC_TARGET}" == "0.0.0.0" || "${VNC_TARGET}" == "::" ]]; then
+  VNC_TARGET="127.0.0.1"
+fi
 VISIBLE_BROWSER_CDP_PORT="${VISIBLE_BROWSER_CDP_PORT:-9224}"
 NOVNC_PASSWORD="${NOVNC_PASSWORD:-}"
 VISIBLE_BROWSER_PROFILE_DIR="${VISIBLE_BROWSER_PROFILE_DIR:-/data/browser-profile}"
@@ -48,6 +54,67 @@ process_is_alive() {
   [[ -n "${stat}" && "${stat}" != Z* ]]
 }
 
+# Xvfb has created its listening socket once the display answers, and this image
+# ships no X client tools (no xdpyinfo, no xset), so the socket is the readiness
+# signal. Without it x11vnc races Xvfb at boot: it cannot open the display, exits
+# instead of waiting, and noVNC then loads in the browser forever against a port
+# nothing listens on.
+X_DISPLAY_NUMBER="${DISPLAY_NUMBER#*:}"
+X_DISPLAY_NUMBER="${X_DISPLAY_NUMBER%%.*}"
+X_SOCKET="/tmp/.X11-unix/X${X_DISPLAY_NUMBER}"
+X_LOCK="/tmp/.X${X_DISPLAY_NUMBER}-lock"
+
+display_is_ready() {
+  # The socket appearing is not the same as the server answering: Xvfb creates it a
+  # moment before it accepts, and x11vnc gives up rather than waiting. Actually dial
+  # it (node is what this container runs the app on, and resolve_chromium_bin below
+  # already shells out to it).
+  [[ -S "${X_SOCKET}" ]] || return 1
+  node -e 'const n=require("net");const s=n.connect(process.argv[1]);s.on("connect",()=>{s.destroy();process.exit(0)});s.on("error",()=>process.exit(1))' "${X_SOCKET}" 2>/dev/null
+}
+
+wait_for_display() {
+  local tries="${1:-60}"
+  while (( tries > 0 )); do
+    if display_is_ready; then
+      return 0
+    fi
+    sleep 0.5
+    tries=$((tries - 1))
+  done
+  return 1
+}
+
+# Logs are truncated rather than appended: both are restarted by the supervisor
+# loop below, and a crash loop must not fill the container's /tmp. The pid is
+# dropped before either starts because websockify binds with SO_REUSEPORT: a
+# restart that assumed the old one was gone would otherwise leave both listening.
+drop_vnc_child() {
+  kill_if_running "${1:-}"
+  wait_if_child "${1:-}"
+}
+
+start_x11vnc() {
+  drop_vnc_child "${X11VNC_PID}"
+  x11vnc \
+    -display "${DISPLAY_NUMBER}" \
+    -forever \
+    -shared \
+    -passwd "${NOVNC_PASSWORD}" \
+    -rfbport "${VNC_PORT}" \
+    -listen "${VNC_LISTEN}" >/tmp/x11vnc.log 2>&1 &
+  X11VNC_PID=$!
+  echo "[start] x11vnc on :${VNC_PORT} (pid=${X11VNC_PID})" >&2
+}
+
+start_websockify() {
+  drop_vnc_child "${WEBSOCKIFY_PID}"
+  websockify --web=/usr/share/novnc/ \
+    "0.0.0.0:${NOVNC_PORT}" "${VNC_TARGET}:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
+  WEBSOCKIFY_PID=$!
+  echo "[start] noVNC proxy on :${NOVNC_PORT} (pid=${WEBSOCKIFY_PID})" >&2
+}
+
 Xvfb "${DISPLAY_NUMBER}" -screen 0 "${SCREEN_GEOMETRY}" -ac >/tmp/xvfb.log 2>&1 &
 XVFB_PID=$!
 
@@ -59,25 +126,19 @@ OPENBOX_PID=$!
 # VNC password — required to enable noVNC access
 # If NOVNC_PASSWORD is not set, noVNC (websockify) will NOT be started
 # This is a security measure: noVNC exposes the full browser session
+X11VNC_PID=""
+WEBSOCKIFY_PID=""
 if [[ -n "${NOVNC_PASSWORD}" ]]; then
-  x11vnc \
-    -display "${DISPLAY_NUMBER}" \
-    -forever \
-    -shared \
-    -passwd "${NOVNC_PASSWORD}" \
-    -rfbport "${VNC_PORT}" \
-    -listen "0.0.0.0" >/tmp/x11vnc.log 2>&1 &
-  X11VNC_PID=$!
-
-  websockify --web=/usr/share/novnc/ \
-    "0.0.0.0:${NOVNC_PORT}" "0.0.0.0:${VNC_PORT}" >/tmp/websockify.log 2>&1 &
-  WEBSOCKIFY_PID=$!
-
-  echo "[start] noVNC enabled with password protection on :${NOVNC_PORT}"
+  if wait_for_display 60; then
+    start_x11vnc
+    start_websockify
+    echo "[start] noVNC enabled with password protection on :${NOVNC_PORT}"
+  else
+    # Not fatal: the supervisor loop below starts both as soon as the display answers.
+    echo "[start] display ${DISPLAY_NUMBER} is not up yet; noVNC will start later" >&2
+  fi
 else
   echo "[start] noVNC DISABLED (set NOVNC_PASSWORD env var to enable)"
-  X11VNC_PID=""
-  WEBSOCKIFY_PID=""
 fi
 
 
@@ -258,10 +319,19 @@ while true; do
 
   if ! process_is_alive "${XVFB_PID}"; then
     echo "Xvfb exited; restarting Xvfb..." >&2
+    wait_if_child "${XVFB_PID}"
+    # This Xvfb is gone, so a lock/socket still sitting under /tmp is stale, and the
+    # next Xvfb refuses to start because of it ("Server is already active for
+    # display 99") -- which would take Chromium and noVNC down with it for good.
+    rm -f "${X_SOCKET}" "${X_LOCK}"
     Xvfb "${DISPLAY_NUMBER}" -screen 0 "${SCREEN_GEOMETRY}" -ac >/tmp/xvfb.log 2>&1 &
     XVFB_PID=$!
     sleep 1
     echo "Xvfb restarted with pid=${XVFB_PID}" >&2
+    # The x11vnc that served the old X server has nothing to do with the new one.
+    # Drop it; the check below restarts it once the display answers again.
+    kill_if_running "${X11VNC_PID}"
+    X11VNC_PID=""
   fi
 
   if ! process_is_alive "${OPENBOX_PID}"; then
@@ -269,6 +339,24 @@ while true; do
     openbox >/tmp/openbox.log 2>&1 &
     OPENBOX_PID=$!
     echo "openbox restarted with pid=${OPENBOX_PID}" >&2
+  fi
+
+  # Both halves of noVNC used to be fire-and-forget: started once at boot and never
+  # watched, so one early failure -- or one Xvfb restart -- left the web page loading
+  # forever against a port nothing listens on.
+  if [[ -n "${NOVNC_PASSWORD}" ]]; then
+    if ! process_is_alive "${X11VNC_PID}"; then
+      # Only worth trying with a display to attach to; otherwise the Xvfb branch
+      # above has to bring it back first.
+      if display_is_ready; then
+        echo "x11vnc not running; starting it..." >&2
+        start_x11vnc
+      fi
+    fi
+    if ! process_is_alive "${WEBSOCKIFY_PID}"; then
+      echo "websockify not running; starting it..." >&2
+      start_websockify
+    fi
   fi
 
   if ! process_is_alive "${CHROMIUM_SUPERVISOR_PID}"; then
