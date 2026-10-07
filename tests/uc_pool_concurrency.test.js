@@ -356,7 +356,12 @@ test('a page whose close() hangs still releases the slot within the teardown bud
 
 test('pageQueueStatus reports the congestion snapshot', async () => {
   const pool = newPool();
-  assert.deepStrictEqual(pool.pageQueueStatus(), {
+  const status = pool.pageQueueStatus();
+  // The sweep interval is a tuning knob, not part of the contract pinned here, so it
+  // is normalised instead of asserted on. The four ledger counters are: a pool that has
+  // opened nothing must read zero on all of them, wedged tabs included.
+  assert.ok(Number.isInteger(status.page_reaper_interval_ms));
+  assert.deepStrictEqual({ ...status, page_reaper_interval_ms: 0 }, {
     active_pages: 0,
     max_pages: 1,
     queued_pages: 0,
@@ -366,6 +371,12 @@ test('pageQueueStatus reports the congestion snapshot', async () => {
     max_session_contexts: 2,
     kept_pages: 0,
     max_kept_pages: 2,
+    session_pages: 0,
+    tracked_pages: 0,
+    wedged_pages: 0,
+    reaped_pages: 0,
+    reaped_targets: 0,
+    page_reaper_interval_ms: 0,
     low_power_device: false
   });
   assert.strictEqual(pool.isContended(), false);

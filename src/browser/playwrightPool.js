@@ -46,6 +46,55 @@ const KEEP_LINGER_UNDER_LOAD = process.env.BROWSER_KEEP_LINGER_UNDER_LOAD === 't
 // closing in the background (a brief second page in the browser is far cheaper
 // than a pool that is permanently stuck at "queue full").
 const PAGE_TEARDOWN_TIMEOUT_MS = envInt('PAGE_TEARDOWN_TIMEOUT_MS', 3000, 100);
+// The one step of teardown that must never be starved. PAGE_TEARDOWN_TIMEOUT_MS is a
+// single budget shared by the cookie snapshot, the about:blank navigation and the
+// close; on a slow host the first two can eat all of it, and boundedTeardown(close, 0)
+// abandons the wait the moment it starts. An abandoned close is exactly what puts a tab
+// in the user's visible browser -- we have just navigated it to about:blank, so that is
+// the tab they then see piling up. The close always keeps this much of the budget.
+const PAGE_CLOSE_MIN_TEARDOWN_MS = envInt('PAGE_CLOSE_MIN_TEARDOWN_MS', 1200, 0);
+// Last-resort GC for pages nobody closed. A tab outlives its owner two ways: the
+// bounded close above timed out and the abandoned page.close() never completed, or the
+// tab was spawned by a click (a target=_blank result, or one of the blind coordinate
+// clicks in simulateBrowsing) and only ever adopted. Neither shows up in the page-slot
+// counter, so without a sweep they stay open for the lifetime of the browser.
+const PAGE_REAPER_INTERVAL_MS = envInt('PAGE_REAPER_INTERVAL_MS', LOW_POWER_DEVICE ? 20000 : 30000, 0);
+// How long a page must be provably unowned (and, for an unattributable tab, seen by
+// the sweep twice) before the reaper touches it. Generous on purpose: the sweep runs
+// while real searches are in flight.
+const PAGE_ORPHAN_GRACE_MS = envInt('PAGE_ORPHAN_GRACE_MS', 15000, 2000);
+// How long after we *asked* a page to close before the pool stops waiting for it. A
+// close we stopped waiting for can never be asked again: Playwright remembers the
+// first call and answers every later one immediately without touching the tab, so a
+// page whose close hung stays open forever as far as the page object is concerned.
+// That is the tab the user then sees, navigated to about:blank, for the rest of the
+// day. What still reaches it is the DevTools target behind it: _closeTargetByCdp.
+const PAGE_CLOSE_WEDGE_MS = envInt('PAGE_CLOSE_WEDGE_MS', 5000, 500);
+// A teardown step we cannot wait for is worse than no step at all: starting
+// goto('about:blank') with a degenerate budget leaves a navigation in flight for the
+// close to hang on. With less than this left the step is skipped, not started.
+const MIN_AWAITABLE_STEP_MS = envInt('MIN_AWAITABLE_STEP_MS', 250, 0);
+// Cap on the protocol round trips the sweep makes on a wedged page's behalf. A
+// browser that cannot answer these is a browser we are about to lose anyway.
+const PAGE_PROTOCOL_TIMEOUT_MS = envInt('PAGE_PROTOCOL_TIMEOUT_MS', 2000, 100);
+// An entry the sweep cannot retire at all (no protocol session, or the tab happens to
+// be the last one in the browser) leaves the ledger after this long.
+const PAGE_LEDGER_MAX_MS = envInt('PAGE_LEDGER_MAX_MS', 120000, 5000);
+// In CDP mode the search context *is* the user's browser profile, so a tab a human
+// opened through noVNC is indistinguishable from a leak. Pages are therefore foreign
+// until proven ours (present when we attached), and the only URL reclaimed on
+// attribution alone is exactly about:blank: a pool leak is blank because we navigate
+// there right before closing, a tab a human is reading never is.
+const REAP_STRAY_BLANK_PAGES = process.env.BROWSER_REAP_STRAY_BLANK_PAGES !== 'false';
+// Blank tabs that were already open when we attached stay somebody else's, because in a
+// visible browser a tab a human has just opened is indistinguishable from one we
+// abandoned. BROWSER_REAP_FOREIGN_BLANK_PAGES=true hands those to the sweep as well,
+// which is what a browser that only this pool ever drives wants.
+const REAP_FOREIGN_BLANK_PAGES = process.env.BROWSER_REAP_FOREIGN_BLANK_PAGES === 'true';
+// How many tabs we opened are remembered across a dropped CDP connection, and how many
+// already-open tabs a re-attach interrogates to prove ownership of them.
+const PAGE_OWNERSHIP_MAX = envInt('PAGE_OWNERSHIP_MAX', 256, 16);
+const FOREIGN_PROBE_MAX_PAGES = 32;
 const BROWSER_SIMULATE_BROWSING = process.env.BROWSER_SIMULATE_BROWSING !== 'false';
 const BROWSER_SCROLL_DELAY_MIN_MS = envInt('BROWSER_SCROLL_DELAY_MIN_MS', LOW_POWER_DEVICE ? 120 : 200, 20);
 const BROWSER_SCROLL_DELAY_MAX_MS = envInt('BROWSER_SCROLL_DELAY_MAX_MS', LOW_POWER_DEVICE ? 350 : 700, 50);
@@ -187,6 +236,38 @@ function boundedTeardown(step, ms) {
       if (timer.unref) timer.unref();
     })
   ]).finally(() => clearTimeout(timer));
+}
+
+// Same bound as boundedTeardown, but it answers whether the step finished. That answer
+// is the difference between a page that is gone and a tab that only the sweep can
+// retire, and the pool has to know which one it is holding.
+async function boundedStep(step, ms) {
+  const pending = Symbol('pending');
+  let timer;
+  const outcome = await Promise.race([
+    Promise.resolve(step).then(() => 'done', () => 'done'),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(pending), ms);
+      if (timer.unref) timer.unref();
+    })
+  ]).finally(() => clearTimeout(timer));
+  return outcome === pending ? 'pending' : 'done';
+}
+
+// boundedTeardown for a step whose answer matters: fall back to `fallback` if the step
+// does not reply in time. As elsewhere the step itself is not cancelled -- only this
+// caller gives up on it.
+async function boundedValue(step, ms, fallback = null) {
+  if (!step) return fallback;
+  let timer;
+  const value = await Promise.race([
+    Promise.resolve(step).catch(() => fallback),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms);
+      if (timer.unref) timer.unref();
+    })
+  ]).finally(() => clearTimeout(timer));
+  return value === undefined ? fallback : value;
 }
 
 // Simulate human browsing before closing a page: multi-step scrolling (with the
@@ -438,6 +519,29 @@ export class PlaywrightPool {
     this._contextHeld = new Map();
     this._lastCapWarnAt = 0;
     this._keptPages = new Map();
+    // page -> ownership record for every page the pool opened (see _trackPage).
+    this._ownedPages = new Map();
+    // Pages that were already open when we attached to a context: somebody else's.
+    this._foreignPages = new WeakSet();
+    // targetId -> when we opened it. Target ids survive a dropped CDP connection, Page
+    // objects do not, and only the ids let a re-attach tell our leftovers from a human's.
+    this._ourTargetIds = new Map();
+    // Unattributable blank tabs waiting to be proven abandoned.
+    this._strayPages = new Map();
+    this._reapedPages = 0;
+    this._reapedTargets = 0;
+    // Unattributable blank tabs whose polite close did not take. Attempt bookkeeping so
+    // the sweep can escalate to a protocol close, then stop hammering a stubborn tab.
+    this._strayAttempts = new Map();
+    this._reapRunning = false;
+    this._reapTimer = null;
+    this._reapDelayMs = 0;
+    // Cached browser-level DevTools session, only ever used to retire a wedged tab.
+    this._browserCdp = null;
+    this._pageReaperTimer = PAGE_REAPER_INTERVAL_MS > 0
+      ? setInterval(() => { this._reapOrphanPages().catch(() => {}); }, PAGE_REAPER_INTERVAL_MS)
+      : null;
+    if (this._pageReaperTimer?.unref) this._pageReaperTimer.unref();
     this._keptPagesCleanupTimer = setInterval(() => this._cleanupKeptPages(), KEPT_PAGE_CLEANUP_INTERVAL_MS);
     this._keptPagesCleanupTimer.unref();
     this._sessionPagesCleanupTimer = setInterval(() => this._cleanupSessionPages(), SESSION_PAGE_CLEANUP_INTERVAL_MS);
@@ -479,6 +583,12 @@ export class PlaywrightPool {
     this.searchContext = null;
     this.sessionPages.clear();
     this.hydratedSharedSessions.clear();
+    // The browser is gone, so every page we tracked went with it.
+    this._ownedPages.clear();
+    this._strayPages.clear();
+    this._strayAttempts.clear();
+    // The protocol session belongs to the connection that is gone.
+    this._browserCdp = null;
     this._resetKeptPages();
   }
 
@@ -594,6 +704,9 @@ export class PlaywrightPool {
     const contexts = browser.contexts();
     if (contexts.length > 0) {
       this.sharedContext = contexts[0];
+      // Whatever is already open in somebody's browser is theirs, not ours, and the
+      // stray-tab sweep must never touch it.
+      this._markForeignPages(this.sharedContext);
       return this.sharedContext;
     }
     this.sharedContext = await browser.newContext();
@@ -615,6 +728,13 @@ export class PlaywrightPool {
     }
     this.searchContext = await browser.newContext();
     return this.searchContext;
+  }
+
+  // The owner is done with the page but is closing it itself: mark it so the sweep
+  // can take over if that close never completes.
+  _markReleased(page) {
+    const entry = this._ownedPages.get(page);
+    if (entry && !entry.releasedAt) entry.releasedAt = Date.now();
   }
 
   // Remember that a session touched the host of `urlLike`. Everything about CDP
@@ -675,6 +795,7 @@ export class PlaywrightPool {
             continue;
           }
           const page = await context.newPage();
+          this._trackPage(page, context, { kind: 'restore' });
           try {
             await page.goto(originEntry.origin, { waitUntil: 'domcontentloaded', timeout: CONFIG.browserTimeoutMs });
             /* c8 ignore start -- body only executes inside the real Chromium page context */
@@ -687,6 +808,7 @@ export class PlaywrightPool {
           } catch (err) {
             console.log(`[browser] failed to restore localStorage for ${originEntry.origin}:`, err.message);
           } finally {
+            this._markReleased(page);
             await page.close().catch(() => {});
           }
         }
@@ -697,6 +819,415 @@ export class PlaywrightPool {
     } finally {
       this.hydratedSharedSessions.set(sessionKey, scopeSize);
     }
+  }
+
+  // ── Page ownership ───────────────────────────────────────────────────────────
+  //
+  // Every page the pool opens is registered, so a page always has an owner to ask:
+  // the close that completed (the close listener unregisters it), or the sweep below.
+  // The registry is also the only record of tabs that a *click* produced: Playwright
+  // closes the page it created and nothing else, so a tab spawned by a click used to
+  // be nobody's business and stayed in the browser for good.
+  _trackPage(page, context, { kind = 'task', task = null } = {}) {
+    if (!page) return null;
+    const entry = {
+      page,
+      context,
+      kind,
+      task,
+      createdAt: Date.now(),
+      releasedAt: 0,
+      // When we last told this page to close. Two released pages look identical; only
+      // one of them has an owner that already gave up waiting for its close, and that
+      // is the one the sweep is allowed to escalate early.
+      closeAttemptedAt: 0,
+      // DevTools target behind the page, looked up only when it is actually needed.
+      targetId: null,
+      targetAttemptedAt: 0
+    };
+    this._ownedPages.set(page, entry);
+    this._rememberPageTarget(page);
+    if (typeof page.on === 'function') {
+      page.on('close', () => {
+        const gone = this._ownedPages.get(page);
+        if (gone && gone.targetId) this._ourTargetIds.delete(gone.targetId);
+        this._ownedPages.delete(page);
+        this._strayPages.delete(page);
+        this._strayAttempts.delete(page);
+      });
+    }
+    return entry;
+  }
+
+  // A click on a result, or one of simulateBrowsing's blind coordinate clicks, opens a
+  // tab. Adopt it -- and anything it opens -- so it cannot outlive the task that
+  // provoked it. Popups are usually still on about:blank when we get them, which is
+  // why a leak of this class looks like a wall of blank tabs.
+  _adoptPopups(page, context, task) {
+    if (!page || typeof page.on !== 'function') return;
+    page.on('popup', (child) => {
+      this._trackPage(child, context, { kind: 'popup', task });
+      this._adoptPopups(child, context, task);
+    });
+  }
+
+  // Remember which DevTools target stands behind this page, so that losing the
+  // connection cannot turn the tab into somebody else's. Best effort and off the critical
+  // path: nothing waits for it, a page whose id we never learned is treated the way it
+  // always was (not ours), and a launched browser dies with us, so only CDP mode asks.
+  _rememberPageTarget(page) {
+    if (!this.connectedBrowser) return;
+    const entry = this._ownedPages.get(page);
+    if (!entry) return;
+    this._resolvePageTarget(page, entry)
+      .then((targetId) => {
+        if (!targetId) return;
+        // Insertion order is age order: the oldest id goes first.
+        if (this._ourTargetIds.size >= PAGE_OWNERSHIP_MAX) {
+          this._ourTargetIds.delete(this._ourTargetIds.keys().next().value);
+        }
+        this._ourTargetIds.set(targetId, Date.now());
+      })
+      .catch(() => {});
+  }
+
+  // The owner is finished with the page: close it now, and leave it registered so the
+  // sweep can retry if that close wedges.
+  _releasePage(page) {
+    const entry = this._ownedPages.get(page);
+    if (!entry) return;
+    if (!entry.releasedAt) entry.releasedAt = Date.now();
+    entry.closeAttemptedAt = Date.now();
+    page.close().catch(() => {});
+  }
+
+  _closeTaskPopups(task) {
+    for (const [page, entry] of [...this._ownedPages]) {
+      if (entry.kind !== 'popup' || entry.task !== task) continue;
+      this._releasePage(page);
+    }
+  }
+
+  // Tabs that were already open when we attached belong to whoever operates this browser
+  // (a human through noVNC), never to us -- foreign first, always, because that is the
+  // safe answer. The exception is a tab we can prove is ours: the DevTools target behind
+  // it is one we opened before this connection dropped. Without that revisit a reconnect
+  // turns every wedged tab of ours into permanent baseline, which is how a long-lived
+  // visible browser ends up with a wall of about:blank that the sweep is not allowed to
+  // touch.
+  _markForeignPages(context) {
+    if (!context) return;
+    let pages = [];
+    try {
+      pages = context.pages();
+    } catch {
+      return;
+    }
+    for (const page of pages) this._foreignPages.add(page);
+    if (!this.connectedBrowser || this._ourTargetIds.size === 0 || pages.length === 0) return;
+    this._reclaimReattachedPages(context, pages.slice(0, FOREIGN_PROBE_MAX_PAGES)).catch(() => {});
+  }
+
+  // Second look at the attach-time baseline, off the critical path. A page stops being
+  // foreign only on positive evidence that we opened it, and it is still the sweep, not
+  // this function, that closes it: blank url, two sightings, never the last tab.
+  async _reclaimReattachedPages(context, pages) {
+    const probe = { context, targetId: null, targetAttemptedAt: 0 };
+    for (const page of pages) {
+      probe.targetId = null;
+      const targetId = await this._resolvePageTarget(page, probe);
+      if (!targetId || !this._ourTargetIds.has(targetId)) continue;
+      this._foreignPages.delete(page);
+      console.log('[browser] a tab left behind before the reconnect is ours again; the sweep will retire it');
+    }
+  }
+
+  _isPinnedPage(page) {
+    for (const entry of this.sessionPages.values()) {
+      if (entry.page === page) return true;
+    }
+    for (const entry of this._keptPages.values()) {
+      if (entry.page === page) return true;
+    }
+    return false;
+  }
+
+  _reapableContexts() {
+    const contexts = [];
+    if (this.sharedContext) contexts.push(this.sharedContext);
+    if (this.searchContext && this.searchContext !== this.sharedContext) contexts.push(this.searchContext);
+    for (const entry of this.sessionContexts.values()) contexts.push(entry.context);
+    return contexts;
+  }
+
+  // Periodic reclamation -- the backstop for every page whose close did not complete.
+  // Two classes:
+  //   1. pages we registered whose owner is gone: the bounded close gave up waiting,
+  //      or the abandoned close never completed. Retried until Chromium confirms it.
+  //      A close that is still pending after PAGE_CLOSE_WEDGE_MS will never complete
+  //      (Playwright will not send a second one), so those are retired by target id.
+  //   2. about:blank tabs in a context we use that we did not open and cannot blame on
+  //      the attach-time baseline. That is what cleans up after a browser restart, or
+  //      after a popup whose parent died before it could be adopted, and it is
+  //      deliberately restricted to the one URL the pool navigates to itself, so a
+  //      human tab in the visible browser is never a candidate.
+  async _reapOrphanPages() {
+    if (this._reapRunning) return { closed: 0, reason: 'already running' };
+    this._reapRunning = true;
+    let closed = 0;
+    try {
+      closed += await this._reapTrackedPages();
+      closed += await this._reapStrayBlankPages();
+    } finally {
+      this._reapRunning = false;
+    }
+    if (closed > 0) {
+      this._reapedPages += closed;
+      console.log(`[browser] reclaimed ${closed} abandoned page(s); ${this._ownedPages.size} still tracked`);
+    }
+    return { closed };
+  }
+
+  _forgetPage(page) {
+    this._ownedPages.delete(page);
+    this._strayPages.delete(page);
+  }
+
+  // Registered pages whose owner is gone. A page that answers close() is finished; a
+  // page that was *told* to close and is still open is wedged, and Playwright cannot
+  // be asked twice -- that is the case the protocol close exists for. An entry is
+  // counted once, when it leaves the ledger, so reaped_pages cannot double count.
+  async _reapTrackedPages() {
+    const now = Date.now();
+    let retired = 0;
+    for (const [page, entry] of [...this._ownedPages]) {
+      if (this._isPinnedPage(page)) continue;
+      let isClosed = false;
+      try {
+        isClosed = page.isClosed();
+      } catch {
+        isClosed = true; // the context went away underneath us: the page is gone too
+      }
+      if (isClosed) {
+        this._forgetPage(page);
+        retired += 1;
+        continue;
+      }
+      const orphaned = entry.releasedAt && now - entry.releasedAt >= PAGE_ORPHAN_GRACE_MS;
+      // A page we already asked to close has had PAGE_CLOSE_WEDGE_MS to do it. Waiting
+      // longer than that is waiting for something that has already stopped happening.
+      const wedged = entry.closeAttemptedAt && now - entry.closeAttemptedAt >= PAGE_CLOSE_WEDGE_MS;
+      if (!orphaned && !wedged) continue;
+      if (!entry.closeAttemptedAt) {
+        // First sight: ask politely and stay on the ledger, so the next sweep can tell
+        // a close that is merely slow from one that is never going to answer.
+        entry.closeAttemptedAt = now;
+        page.close().catch(() => {});
+        continue;
+      }
+      if (!wedged) continue;
+      if (!entry.targetId) await this._resolvePageTarget(page, entry);
+      const outcome = entry.targetId ? await this._closeTargetByCdp(entry.targetId) : 'unsupported';
+      if (outcome === 'closed') {
+        this._reapedTargets += 1;
+        this._forgetPage(page);
+        retired += 1;
+        console.log('[browser] retired a wedged tab through the DevTools protocol');
+      } else if (outcome === 'gone') {
+        this._forgetPage(page);
+        retired += 1;
+      } else if (outcome !== 'last-page' && now - entry.createdAt > PAGE_LEDGER_MAX_MS) {
+        // Out of options (no protocol session at all, or a tab that will not answer
+        // any more). Forget it rather than grow the ledger without end.
+        this._forgetPage(page);
+      }
+    }
+    return retired;
+  }
+
+  // Which DevTools target is this page? Asked of the page itself through a
+  // page-scoped session, so two pages opened at once cannot be mixed up -- and a page
+  // whose close() has wedged still answers. Only the sweep calls this, never a task.
+  async _resolvePageTarget(page, entry) {
+    if (entry.targetId) return entry.targetId;
+    const context = entry.context || (typeof page.context === 'function' ? page.context() : null);
+    if (!context || typeof context.newCDPSession !== 'function') return null;
+    let session = null;
+    try {
+      session = await boundedValue(context.newCDPSession(page), PAGE_PROTOCOL_TIMEOUT_MS);
+      if (!session || typeof session.send !== 'function') return null;
+      const info = await boundedValue(session.send('Target.getTargetInfo'), PAGE_PROTOCOL_TIMEOUT_MS);
+      const target = info && info.targetInfo;
+      // Anything but a page target is refused: a session bound to the browser would
+      // hand us the ability to close the browser itself.
+      if (target && target.type === 'page' && target.targetId) entry.targetId = target.targetId;
+    } catch {
+      return null;
+    } finally {
+      try {
+        if (session && typeof session.detach === 'function') {
+          await boundedValue(session.detach(), PAGE_PROTOCOL_TIMEOUT_MS);
+        }
+      } catch {
+        // a session that will not detach dies with the connection
+      }
+    }
+    return entry.targetId;
+  }
+
+  async _browserCdpSession() {
+    const browser = this.connectedBrowser || this.browser;
+    if (!browser || typeof browser.newBrowserCDPSession !== 'function') return null;
+    if (this._browserCdp) return this._browserCdp;
+    const session = await boundedValue(browser.newBrowserCDPSession(), PAGE_PROTOCOL_TIMEOUT_MS);
+    if (session) this._browserCdp = session;
+    return session;
+  }
+
+  // The last resort: close a tab by its DevTools target id. Returns 'closed', 'gone'
+  // (the browser does not have it any more), 'last-page' (closing it would empty the
+  // browser) or 'failed'/'unsupported'. Only ids we recorded for pages we opened are
+  // ever passed here, which is what keeps a human tab untouchable.
+  async _closeTargetByCdp(targetId) {
+    const session = await this._browserCdpSession();
+    if (!session || typeof session.send !== 'function') return 'unsupported';
+    try {
+      const listing = await boundedValue(session.send('Target.getTargets'), PAGE_PROTOCOL_TIMEOUT_MS);
+      const targetInfos = listing && listing.targetInfos;
+      if (!Array.isArray(targetInfos)) {
+        // A listing we could not get is not a listing that says the tab is gone, and a
+        // session that cannot answer is not a session to keep caching.
+        this._browserCdp = null;
+        return 'failed';
+      }
+      const pages = targetInfos.filter((t) => t.type === 'page');
+      if (!pages.some((t) => t.targetId === targetId)) return 'gone';
+      // Never take a browser down to zero tabs: in a visible browser the last tab is
+      // the window, and the last window is the Chrome this pool is attached to.
+      if (pages.length <= 1) return 'last-page';
+      const result = await boundedValue(session.send('Target.closeTarget', { targetId }), PAGE_PROTOCOL_TIMEOUT_MS);
+      if (!result || result.success === false) {
+        this._browserCdp = null;
+        return 'failed';
+      }
+      return 'closed';
+    } catch {
+      // Assume the cached session died with the connection; the next sweep opens one.
+      this._browserCdp = null;
+      return 'failed';
+    }
+  }
+
+  async _reapStrayBlankPages() {
+    if (!REAP_STRAY_BLANK_PAGES) return 0;
+    const now = Date.now();
+    let closed = 0;
+    for (const [page, entry] of [...this._strayPages]) {
+      let isClosed = false;
+      try {
+        isClosed = page.isClosed();
+      } catch {
+        isClosed = true;
+      }
+      if (isClosed || this._ownedPages.has(page)) {
+        this._strayPages.delete(page);
+        // We asked for this tab to go away and it did: that counts as reclaimed even
+        // though the close promise never answered.
+        if (isClosed && this._strayAttempts.delete(page)) closed += 1;
+      }
+    }
+    for (const context of this._reapableContexts()) {
+      let pages = [];
+      try {
+        pages = context.pages();
+      } catch {
+        continue; // context torn down between the reapable snapshot and now
+      }
+      for (const page of pages) {
+        if (this._ownedPages.has(page) || this._isPinnedPage(page)) continue;
+        // Foreign means somebody else's, unless the operator said this browser belongs to
+        // the pool alone. Either way only about:blank is a candidate below, so a human
+        // reading a page is still never a candidate.
+        if (this._foreignPages.has(page) && !REAP_FOREIGN_BLANK_PAGES) continue;
+        let url = '';
+        try {
+          url = page.url();
+        } catch {
+          continue;
+        }
+        if (url !== 'about:blank') continue;
+        const seen = this._strayPages.get(page);
+        // Two sweeps and a grace period: a page that is mid-creation, or that a human
+        // has just opened to type an address into, is never a candidate on first sight.
+        if (!seen) {
+          // Bounded like the attempt counter: candidates are candidates only while the
+          // sweep is actually watching them, never a permanent registry.
+          if (this._strayPages.size > 128) this._strayPages.clear();
+          this._strayPages.set(page, { firstSeenAt: now, sweeps: 1 });
+          continue;
+        }
+        seen.sweeps += 1;
+        if (seen.sweeps < 2 || now - seen.firstSeenAt < PAGE_ORPHAN_GRACE_MS) continue;
+        // In CDP mode this context is the user's own browser window, so its last page is
+        // the window itself -- leave that one alone. In launched mode the context belongs
+        // to the pool and that last blank page is exactly the leak to clean up.
+        if (USE_EXISTING_CHROME && pages.length <= 1) continue;
+        closed += await this._retireStrayPage(page, context);
+      }
+    }
+    return closed;
+  }
+
+  // Retire one unattributable blank tab. The first try is the polite close; if the tab
+  // is still here on a later sweep that close never took, which is the same wedge a
+  // tracked page gets, so it gets the same way out -- close the DevTools target behind
+  // it. Three tries on one tab, then we stop hammering it. Returns what to count.
+  async _retireStrayPage(page, context) {
+    const attempts = this._strayAttempts.get(page) || 0;
+    if (attempts >= 3) {
+      // Three tries and it is still here: stop hammering one tab, and say so once.
+      console.log('[browser] giving up on an abandoned blank tab that will not close');
+      this._strayAttempts.delete(page);
+      this._strayPages.delete(page);
+      return 0;
+    }
+    if (this._strayAttempts.size > 64) this._strayAttempts.clear();
+    this._strayAttempts.set(page, attempts + 1);
+    if (attempts === 0) {
+      page.close().catch(() => {});
+      // Nothing proven yet, so nothing counted, and the candidate stays registered: that
+      // is how the next sweep learns the polite close was never going to answer.
+      return 0;
+    }
+    const probe = { context, targetId: null };
+    await this._resolvePageTarget(page, probe);
+    const outcome = probe.targetId ? await this._closeTargetByCdp(probe.targetId) : 'unsupported';
+    if (outcome === 'closed') {
+      this._reapedTargets += 1;
+      console.log('[browser] retired an abandoned blank tab through the DevTools protocol');
+      return 1;
+    }
+    return outcome === 'gone' ? 1 : 0;
+  }
+
+  // One pending sweep is enough, and it is deferred by exactly the grace period so the
+  // grace has actually elapsed when it runs. That is what makes the tabs left by a
+  // finished query go away shortly after the query, instead of at some later tick of
+  // the interval -- or never, on a browser that goes idle right after.
+  _scheduleReap(delayMs = PAGE_ORPHAN_GRACE_MS) {
+    // The shorter wait wins: a task that just abandoned a close wants the sweep in a
+    // few seconds, not after the full grace a merely unadopted popup would wait for.
+    if (this._reapTimer) {
+      if (this._reapDelayMs <= delayMs) return;
+      clearTimeout(this._reapTimer);
+    }
+    this._reapDelayMs = delayMs;
+    this._reapTimer = setTimeout(() => {
+      this._reapTimer = null;
+      this._reapDelayMs = 0;
+      this._reapOrphanPages().catch(() => {});
+    }, delayMs);
+    if (this._reapTimer.unref) this._reapTimer.unref();
   }
 
   _cleanupKeptPages() {
@@ -941,6 +1472,9 @@ export class PlaywrightPool {
       this._activePageCount++; // the slot travels with this hand-off
       waiter.resolve();
     }
+    // The pool just went idle: anything this task could not close is now provably
+    // unowned, so queue the sweep that retires it (deferred by the grace period).
+    if (this._activePageCount === 0) this._scheduleReap();
   }
 
   // Cheap saturation snapshot for engine_status / failure details.
@@ -958,6 +1492,20 @@ export class PlaywrightPool {
       // out of memory.
       kept_pages: this._keptPages.size,
       max_kept_pages: MAX_KEPT_PAGES,
+      // The interactive pages session engines pin in the visible browser. The sweep skips
+      // them on purpose, so without this number "who owns that tab?" has no answer.
+      session_pages: this.sessionPages.size,
+      // Pages the pool opened and nobody has confirmed closed, plus what the sweep has
+      // already retired. Without these the pool cannot explain a browser full of tabs
+      // while every slot counter above reads zero.
+      tracked_pages: this._ownedPages.size,
+      // Tracked pages we have already asked to close that are still open: a number that
+      // stays above zero is a page.close() that is never going to answer.
+      wedged_pages: [...this._ownedPages.values()].filter((entry) => entry.closeAttemptedAt > 0).length,
+      // of reaped_pages, how many needed the DevTools protocol to actually go away
+      reaped_targets: this._reapedTargets,
+      reaped_pages: this._reapedPages,
+      page_reaper_interval_ms: PAGE_REAPER_INTERVAL_MS,
       low_power_device: LOW_POWER_DEVICE
     };
   }
@@ -974,6 +1522,8 @@ export class PlaywrightPool {
     let ownsContext = false;
     let page = null;
     let heldSessionKey = null;
+    // This task's pages: the page it opened plus every tab a click on it spawned.
+    let task = null;
     const isCdpMode = Boolean(this.connectedBrowser);
 
     try {
@@ -992,6 +1542,9 @@ export class PlaywrightPool {
       }
 
       page = await context.newPage();
+      task = { startedAt: Date.now() };
+      this._trackPage(page, context, { kind: 'task', task });
+      this._adoptPopups(page, context, task);
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
       await applyStealthIfNeeded(page, { isCdpMode });
 
@@ -1040,17 +1593,27 @@ export class PlaywrightPool {
       } finally {
         clearTimeout(fnTimer);
         if (signal && onFnAbort) signal.removeEventListener('abort', onFnAbort);
-        // One budget for the entire teardown instead of one per step, so the
-        // worst case a cancelled request costs the next client is
-        // PAGE_TEARDOWN_TIMEOUT_MS in total.
+        // One budget for the entire teardown instead of one per step, so the worst
+        // case a cancelled request costs the next client is PAGE_TEARDOWN_TIMEOUT_MS
+        // -- plus the close's own reserve, which is what stops a slow cookie snapshot
+        // from abandoning page.close() the moment it starts.
         const teardownDeadline = Date.now() + PAGE_TEARDOWN_TIMEOUT_MS;
+        const closeFloorMs = Math.min(PAGE_CLOSE_MIN_TEARDOWN_MS, Math.floor(PAGE_TEARDOWN_TIMEOUT_MS / 2));
+        // The steps before the close may spend the budget, but never all of it.
+        const stepMs = () => Math.max(0, teardownDeadline - Date.now() - closeFloorMs);
         const teardownMs = () => Math.max(0, teardownDeadline - Date.now());
         if (sessionKey) {
           // Cookie persistence is worth waiting for, but not worth stalling the
           // whole pool for: it runs on the same context we are about to close.
-          await boundedTeardown(this.persistContextState(context, sessionKey), teardownMs());
+          const persistMs = stepMs();
+          if (persistMs >= MIN_AWAITABLE_STEP_MS) {
+            await boundedTeardown(this.persistContextState(context, sessionKey), persistMs);
+          }
         }
         if (keepPageOpen) {
+          // Parking keeps this page for the human; the tabs it spawned are still ours
+          // to close and nothing else will close them.
+          this._closeTaskPopups(task);
           const key = sessionKey ? `session:${sessionKey}` : `_ephemeral_${Date.now()}`;
           const existing = this._keptPages.get(key);
           if (existing) {
@@ -1085,8 +1648,31 @@ export class PlaywrightPool {
           // beforeunload dialogs (Playwright #11581), stalled route handlers
           // (#6317), and pages with websockets/long-polling/SSE that keep
           // the browser spinner active (network never reaches "idle").
-          await boundedTeardown(page.goto('about:blank', { waitUntil: 'domcontentloaded' }), teardownMs());
-          await boundedTeardown(page.close(), teardownMs());
+          this._closeTaskPopups(task);
+          // A step we cannot wait for is worse than no step at all: a navigation started
+          // with a degenerate budget is still in flight when the close runs, and that is
+          // exactly the close that then hangs and gets abandoned. Skip it instead.
+          const gotoMs = stepMs();
+          if (gotoMs >= MIN_AWAITABLE_STEP_MS) {
+            await boundedTeardown(page.goto('about:blank', { waitUntil: 'domcontentloaded' }), gotoMs);
+          }
+          this._markReleased(page);
+          // From here the ledger knows we have asked for this tab to go away, which is
+          // what lets the sweep escalate to a protocol close instead of politely asking
+          // a page that is never going to answer again.
+          const taskEntry = this._ownedPages.get(page);
+          if (taskEntry) taskEntry.closeAttemptedAt = Date.now();
+          // The close gets all the remaining budget and at least closeFloorMs even
+          // once the deadline has passed: holding a slot a little longer is cheap, a
+          // tab that nobody ever closes is not.
+          const closeOutcome = await boundedStep(page.close(), Math.max(teardownMs(), closeFloorMs));
+          if (closeOutcome === 'done') {
+            this._ownedPages.delete(page);
+          } else {
+            // Still live and now unowned. Forgetting it here is how the browser ends up
+            // with a wall of about:blank tabs after a busy hour; the sweep retries it.
+            this._scheduleReap(PAGE_CLOSE_WEDGE_MS + 250);
+          }
           if (ownsContext) {
             await boundedTeardown(context.close(), teardownMs());
           }
@@ -1130,11 +1716,14 @@ export class PlaywrightPool {
         const oldestKey = this.sessionPages.keys().next().value;
         if (oldestKey) {
           const oldEntry = this.sessionPages.get(oldestKey);
-          oldEntry.page.close().catch(() => {});
+          this._retireSessionPage(oldEntry);
           this.sessionPages.delete(oldestKey);
         }
       }
       page = await context.newPage();
+      // A pinned page is still a page we opened. It goes on the ledger, or a close that
+      // never answers there leaks a tab nothing is allowed to retire afterwards.
+      this._trackPage(page, context, { kind: 'session' });
       page.setDefaultTimeout(CONFIG.browserTimeoutMs);
       await applyStealthIfNeeded(page, { isCdpMode });
       applySessionResourcePolicy(page, { isCdpMode });
@@ -1183,18 +1772,24 @@ export class PlaywrightPool {
 
   _cleanupSessionPages() {
     const now = Date.now();
-    const promises = [];
     for (const [key, entry] of this.sessionPages) {
       if (now - entry.lastAccessedAt > SESSION_PAGE_TTL_MS || entry.page.isClosed()) {
         this.sessionPages.delete(key);
-        if (!entry.page.isClosed()) {
-          promises.push(entry.page.close().catch(() => {}));
-        }
+        if (!entry.page.isClosed()) this._retireSessionPage(entry);
       }
     }
-    if (promises.length > 0) {
-      Promise.all(promises).catch(() => {});
+  }
+
+  // Ask a session's interactive page to go away. Asking through the ledger is the point:
+  // if this close is the one that never answers, the sweep can escalate to the target
+  // behind the tab instead of leaving a blank tab in the browser for good.
+  _retireSessionPage(entry) {
+    const tracked = this._ownedPages.get(entry.page);
+    if (tracked) {
+      tracked.closeAttemptedAt = Date.now();
+      this._scheduleReap(PAGE_CLOSE_WEDGE_MS + 250);
     }
+    entry.page.close().catch(() => {});
   }
 
   sessionStatus(sessionKey, { redact } = {}) {
@@ -1252,6 +1847,19 @@ export class PlaywrightPool {
   async close() {
     clearInterval(this._keptPagesCleanupTimer);
     clearInterval(this._sessionPagesCleanupTimer);
+    clearInterval(this._pageReaperTimer);
+    if (this._reapTimer) clearTimeout(this._reapTimer);
+    this._reapTimer = null;
+    this._reapDelayMs = 0;
+    this._strayAttempts.clear();
+    this._ourTargetIds.clear();
+    if (this._browserCdp) {
+      // The pool keeps an externally-managed Chrome alive, so let go of the protocol
+      // session it borrowed instead of leaving it attached to someone else's browser.
+      const session = this._browserCdp;
+      this._browserCdp = null;
+      await boundedValue(typeof session.detach === 'function' ? session.detach() : null, PAGE_PROTOCOL_TIMEOUT_MS);
+    }
     for (const waiter of this._pageWaiters.splice(0, this._pageWaiters.length)) {
       if (waiter.settled) continue;
       waiter.settled = true;

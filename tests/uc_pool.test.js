@@ -223,7 +223,9 @@ test('withPage linger closes with delay', async () => {
   const closedPage = pool.browser.contexts_[0].pages_[0];
   assert.strictEqual(closedPage.closed, true);
   assert.ok(closedPage.gotoLog.includes('about:blank') || closedPage.gotoLog.length >= 1, 'about:blank navigation attempted');
-  assert.ok(dt >= 100, `linger elapsed >=100ms, got ${dt}`);
+  // closeDelayMs is a scalar here, so it jitters +/-40%: 150ms can legally linger
+  // as little as 90ms. Assert the jitter floor, not the nominal value.
+  assert.ok(dt >= 85, `linger elapsed >=85ms, got ${dt}`);
   await pool.close();
 });
 

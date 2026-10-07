@@ -320,6 +320,25 @@ What changed under load:
   page — exactly what a cancelled or timed-out request tends to leave behind — used
   to own the only slot of a 1-slot machine until restart; now the close finishes in
   the background while the next client starts.
+ - A close that this budget abandons is not retried later: Playwright remembers the
+   first call, so every following `page.close()` returns at once without touching the
+   tab, and the page — already navigated to `about:blank` — stays in the visible
+   browser forever. Opened pages are therefore ledgered, and one still open
+   `PAGE_CLOSE_WEDGE_MS` after we asked it to close is retired through the DevTools
+   protocol (`Target.closeTarget`) by a sweep that runs every
+   `PAGE_REAPER_INTERVAL_MS`. The same sweep reclaims tabs opened by clicking a result
+   and unattributable `about:blank` leftovers (`BROWSER_REAP_STRAY_BLANK_PAGES=false`
+   turns that part off); it never touches tabs the pool did not open and never reduces
+   a CDP-attached context to its last page. Teardown also skips a step that cannot
+   finish inside the remaining budget (`MIN_AWAITABLE_STEP_MS`) instead of starting a
+   navigation it would then abandon mid-flight. What the sweep knows survives a dropped
+   CDP connection as well, because `Page` objects do not: target ids are remembered
+   instead (`PAGE_OWNERSHIP_MAX`), so a re-attach re-claims the tabs we left behind
+   rather than promoting them to permanent strangers nobody is allowed to close, which
+   is how a browser ends up with blank tabs that only ever grow. Tabs that were already
+   open when we attached still belong to somebody else unless
+   `BROWSER_REAP_FOREIGN_BLANK_PAGES=true`, which is what a browser only this service
+   ever drives should set.
 - Pages parked open after a captcha/bot check (`keepPageOpen`) are capped by
   `MAX_KEPT_PAGES`. They sit outside the slot accounting and, in launch mode, each one
   owns a browser context, so several clients scraping bot-walled sites accumulated
@@ -341,7 +360,12 @@ What changed under load:
 
 Inspect live saturation with `engine_status` → `page_pool`
 (`active_pages` / `max_pages` / `queued_pages` / `max_queued_pages` / `session_contexts`
-/ `kept_pages`).
+/ `kept_pages` / `session_pages` / `tracked_pages` / `wedged_pages` / `reaped_pages` /
+/ `reaped_targets`). `session_pages` are the interactive pages a session pins in the
+ visible browser, which the sweep skips on purpose; `tracked_pages` counts pages the pool
+ opened and has not confirmed closed, `wedged_pages` are the ones already asked to close
+ that are still open, and the last two are cumulative reclaim counters (the targets that
+ needed the DevTools protocol to go away, and pages reclaimed in total).
 
 Recommended floor for an ARM or 2 GB board:
 

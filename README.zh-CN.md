@@ -312,6 +312,22 @@ ssh -L 6082:127.0.0.1:6082 user@server
   `storageState()` / `goto('about:blank')` / `page.close()` 最多占用槽位多久。
   页面卡死（被取消或超时的请求最容易留下卡死页面）时，旧行为是一个死页面把
   单槽位机器的唯一槽位占到重启为止；现在超时即交还槽位，关闭动作在后台完成。
+ - 但「被预算放弃的 close」不会补做第二次：Playwright 记住了第一次调用，之后每次
+   `page.close()` 都立刻返回而不去碰标签页，于是那个已经导航到 `about:blank` 的页面
+   就永远留在可见浏览器里 —— 这正是查询结束后越攒越多的空白页。因此池子给每个自己
+   打开的页面记账：只要「已经叫它关」却仍开着超过 `PAGE_CLOSE_WEDGE_MS`，就走
+   DevTools 协议（`Target.closeTarget`）把它关掉，例行清扫每
+   `PAGE_REAPER_INTERVAL_MS` 跑一次。同一次清扫也回收点击搜索结果新开的标签页，以及
+   无法归属到任何任务的 `about:blank` 残留页（`BROWSER_REAP_STRAY_BLANK_PAGES=false`
+   只停用后一类回收）；清扫绝不碰不是池子开的标签页，也绝不会把一个 CDP context 关到只剩
+   最后一页。收尾阶段还会直接跳过「剩余预算根本不够跑完」的步骤
+   （`MIN_AWAITABLE_STEP_MS`），而不是先启动一趟注定半途而废的导航。
+   清扫的台账还能跨 CDP 断线重连存活：重连之后 Page 对象全部作废，能被记住的只有
+   target id（上限 `PAGE_OWNERSHIP_MAX`），所以上一次连接里我们留下的页会被重新认领回
+   自己名下，而不是被永久升级成「不能关的陌生人」—— 空白页只增不减正是这么来的。
+   至于连接建立那一刻就已经开着的标签页（可见浏览器启动页、持久化 profile 恢复的窗口）
+   仍然算别人的，除非 `BROWSER_REAP_FOREIGN_BLANK_PAGES=true`：只有本服务在驱动的浏览器
+   应当打开它。
 - 命中验证码/风控而保留不关的页面（`keepPageOpen`）受 `MAX_KEPT_PAGES` 约束：
   这类页面不计入页面槽位，launch 模式下还各自独占一个 context，多个客户端同时抓风控
   站点会在 `KEPT_PAGE_TTL_MS`（默认 5 分钟）内攒出数个常驻 Chromium；超限时按
@@ -329,7 +345,12 @@ ssh -L 6082:127.0.0.1:6082 user@server
 
 实时饱和度看 `engine_status` → `page_pool`
 （`active_pages` / `max_pages` / `queued_pages` / `max_queued_pages` / `session_contexts`
-/ `kept_pages`）。
+/ `kept_pages` / `session_pages` / `tracked_pages` / `wedged_pages` / `reaped_pages` /
+/ `reaped_targets`）。
+ `session_pages` 是各会话在可见浏览器里钉住的交互页（清扫刻意跳过它们）；
+ `tracked_pages` 是池子开过、尚未确认关掉的页面，`wedged_pages` 是「已叫它关却还开着」
+ 的页面（长期大于 0 就说明 close 永远不会应答了），后两个是清扫累计收回的页面数与
+ 其中必须走协议才能关掉的 target 数。
 
 ARM 或 2G 内存机器的建议起点：
 
